@@ -76,10 +76,7 @@
 要求 Go 1.27.3 或更新（`go.mod` 会通过 `GOTOOLCHAIN=auto` 自动下载所需版本）。原生 UI 不需要 Bun。
 
 ```sh
-# 运行
-go run .
-
-# 开发模式（修改 .go 后自动重启）
+# 开发模式（生成并启动开发版 app，修改 .go 后自动重启）
 go tool mygo dev
 
 # 测试
@@ -88,7 +85,12 @@ go vet ./...
 
 # 打包当前平台（macOS 生成 .app + .dmg）
 go tool mygo build
+
+# macOS 启动打包后的应用（Apple Silicon 把 amd64 换成 arm64）
+open build/darwin-amd64/BaudScan.app
 ```
+
+macOS 上请通过 mygo 生成的 `.app` 运行：直接 `go run .` 或裸二进制不会创建原生窗口。Windows / Linux 运行 `build/<os>-<arch>/` 下的可执行文件。
 
 构建产物在 `build/`。
 
