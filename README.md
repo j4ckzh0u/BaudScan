@@ -92,11 +92,30 @@ open build/darwin-amd64/BaudScan.app
 
 macOS 上请通过 mygo 生成的 `.app` 运行：直接 `go run .` 或裸二进制不会创建原生窗口。Windows / Linux 运行 `build/<os>-<arch>/` 下的可执行文件。
 
-构建产物在 `build/`。
+mygo 构建产物在 `build/`。
+
+### 一键构建 x64 发布包
+
+在 macOS 上执行：
+
+```sh
+./build.sh
+```
+
+脚本会构建全部三个 x64 目标，并把最终文件放进 `dist/`：
+
+| 文件 | 平台 | 说明 |
+|---|---|---|
+| `BaudScan-<version>-macos-x64.dmg` | macOS Intel | 已校验的磁盘镜像 |
+| `BaudScan-<version>-windows-x64.exe` | Windows x64 | GUI 子系统 PE，无控制台窗口 |
+| `BaudScan-<version>-linux-x64` | Linux x64 | 可执行 ELF 二进制 |
+| `SHA256SUMS` | — | 三个产物的 SHA-256 |
+
+DMG 依赖 macOS 的 `hdiutil`，因此这个脚本需在 macOS 上运行。Windows 安装器需要 NSIS，脚本不生成安装器，只生成可直接运行的 exe。中间构建目录为 `build/release/`，最终产物目录 `dist/` 已加入 `.gitignore`。
 
 ### 交叉编译
 
-项目不依赖 cgo，可从任意平台构建三大平台的可执行文件：
+如果只需要可执行文件，项目不依赖 cgo，可手动交叉编译：
 
 ```sh
 CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build -o dist/baudscan-darwin-arm64 .
@@ -115,6 +134,7 @@ CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -o dist/baudscan-linux-amd64 .
 
 ```
 main.go                 窗口入口
+build.sh                一键构建 x64 发布包
 app.go                  状态、扫描编排、端口刷新
 view.go                 mygo 原生 UI
 internal/baud/          采样、评分、报告格式化
