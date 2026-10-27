@@ -1,0 +1,8 @@
+{
+  "name": "BaudScan",
+  "slug": "baudscan",
+  "identifier": "io.github.baudscan",
+  "version": "0.1.0",
+  "copyright": "Copyright © 2026 BaudScan contributors",
+  "out": "build"
+}

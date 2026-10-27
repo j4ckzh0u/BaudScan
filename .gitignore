@@ -1,0 +1,7 @@
+/build/
+/dist/
+/.mygo/
+*.app
+*.dmg
+*.deb
+.DS_Store
