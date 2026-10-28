@@ -3,7 +3,7 @@
   "slug": "baudscan",
   "identifier": "io.github.j4ckzh0u.baudscan",
   "version": "0.1.0",
-  "copyright": "Copyright ©2026 j4ckzh0u",
+  "copyright": "Copyright (c) 2026 j4ckzh0u",
   "out": "build",
   "publisher": "j4ckzh0u"
 }
