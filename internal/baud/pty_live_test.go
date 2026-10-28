@@ -46,7 +46,7 @@ func TestLivePTY(t *testing.T) {
 
 	results, err := NewScanner().Scan(context.Background(), ScanOptions{
 		Port:      portName,
-		Rates:     Common,
+		Rates:     All,
 		Sample:    350 * time.Millisecond,
 		Settle:    20 * time.Millisecond,
 		IdleAfter: 20 * time.Millisecond,
@@ -55,8 +55,8 @@ func TestLivePTY(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != len(Common) {
-		t.Fatalf("got %d results, want %d", len(results), len(Common))
+	if len(results) != len(All) {
+		t.Fatalf("got %d results, want %d", len(results), len(All))
 	}
 	for _, r := range results {
 		if r.Bytes == 0 {

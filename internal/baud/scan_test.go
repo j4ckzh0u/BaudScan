@@ -88,7 +88,7 @@ func (p *fakePort) Break(time.Duration) error { return nil }
 func fakeScanner() (*Scanner, *fakePort) {
 	r := rand.New(rand.NewPCG(9, 10))
 	streams := make(map[int][]byte)
-	for _, rate := range Extended {
+	for _, rate := range All {
 		noise := make([]byte, 3000)
 		for i := range noise {
 			noise[i] = byte(r.Uint32())
@@ -108,7 +108,7 @@ func TestScanFindsTextRate(t *testing.T) {
 	scanner, _ := fakeScanner()
 	opts := ScanOptions{
 		Port:      "fake",
-		Rates:     Common,
+		Rates:     All,
 		Sample:    120 * time.Millisecond,
 		IdleAfter: 8 * time.Millisecond,
 		MinSample: 20 * time.Millisecond,
@@ -118,8 +118,8 @@ func TestScanFindsTextRate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != len(Common) {
-		t.Fatalf("got %d results, want %d", len(results), len(Common))
+	if len(results) != len(All) {
+		t.Fatalf("got %d results, want %d", len(results), len(All))
 	}
 	Rank(results)
 	best := results[0]
@@ -175,7 +175,7 @@ func TestScanCancel(t *testing.T) {
 	go func() {
 		_, err := scanner.Scan(ctx, ScanOptions{
 			Port:      "fake",
-			Rates:     Common,
+			Rates:     All,
 			Sample:    200 * time.Millisecond,
 			IdleAfter: 20 * time.Millisecond,
 			MinSample: 50 * time.Millisecond,

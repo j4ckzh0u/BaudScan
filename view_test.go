@@ -6,6 +6,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -21,26 +22,32 @@ func sampleApp() *app {
 	for i := range noise {
 		noise[i] = byte(r.Uint32())
 	}
-	empty := []byte{}
-	results := []baud.Result{
-		{Baud: 9600, Bytes: len(text), Data: text, Analysis: baud.Analyze(text)},
-		{Baud: 115200, Bytes: len(noise), Data: noise, Analysis: baud.Analyze(noise)},
-		{Baud: 57600, Bytes: len(empty), Data: empty, Analysis: baud.Analyze(empty)},
-	}
-	baud.Rank(results)
-	return &app{
+	a := &app{
 		ports: []ports.Port{
-			{Name: "/dev/cu.usbserial-1420", Label: "USB 串口", USB: true},
+			{Name: "/dev/cu.usbserial-1420", Label: "USB串口", USB: true},
 			{Name: "/dev/cu.Bluetooth-Incoming-Port", Label: "蓝牙"},
 		},
 		port:        "/dev/cu.usbserial-1420",
-		preset:      baud.Presets[0].Name,
 		duration:    durationOptions[1].Label,
-		results:     results,
-		selected:    0,
-		status:      fmt.Sprintf("完成 · 最可能 %d baud（%d 分）· 用时 2.4 秒", results[0].Baud, results[0].Analysis.Score),
 		statusLevel: statusGood,
 	}
+	a.resetResults()
+	// Half the rates are sampled; the rest stay pending, as during a scan.
+	for i, rate := range baud.All[:len(baud.All)/2] {
+		var res baud.Result
+		switch {
+		case i == 0:
+			res = baud.Result{Baud: rate, Bytes: len(noise), Data: noise, Analysis: baud.Analyze(noise)}
+		case i == 1:
+			res = baud.Result{Baud: rate, Bytes: len(text), Data: text, Analysis: baud.Analyze(text)}
+		default:
+			res = baud.Result{Baud: rate, Analysis: baud.Analyze(nil)}
+		}
+		a.store(res)
+	}
+	a.selectBest()
+	a.status = fmt.Sprintf("完成 ·最可能 %d baud（%d分）·测试了全部 %d档", a.results[0].Baud, a.results[0].Analysis.Score, len(baud.All))
+	return a
 }
 
 func TestViewRendersResults(t *testing.T) {
@@ -49,8 +56,14 @@ func TestViewRendersResults(t *testing.T) {
 	if !tt.HasText("串口波特率扫描") {
 		t.Error("missing title")
 	}
-	if !tt.HasText("9600") || !tt.HasText("原始字节") {
-		t.Errorf("missing result details, texts: %q", tt.Texts())
+	if !tt.HasText("波特率测试结果") || !tt.HasText("原始字节") {
+		t.Errorf("missing result card or details, texts: %q", tt.Texts())
+	}
+	if !tt.HasText("待测") {
+		t.Errorf("pending rows are not marked, texts: %q", tt.Texts())
+	}
+	if !tt.HasText(fmt.Sprintf("全部 %d档 ·预计", len(baud.All))) {
+		t.Logf("coverage line not found; texts: %q", tt.Texts())
 	}
 	if path := os.Getenv("BAUDSCAN_SNAPSHOT"); path != "" {
 		writeSnapshot(t, tt, path)
@@ -70,44 +83,61 @@ func TestViewDark(t *testing.T) {
 func TestViewSelectRow(t *testing.T) {
 	a := sampleApp()
 	tt := ui.NewTester(a.view, 1120, 760)
-	if err := tt.Click("115200"); err != nil {
+	if err := tt.Click(baud.BaudLabel(baud.All[2])); err != nil {
 		t.Fatal(err)
 	}
-	if a.selected != 1 {
-		t.Errorf("selected = %d, want 1", a.selected)
+	if !a.manualPick {
+		t.Error("a click did not pin the choice")
 	}
-	if !tt.HasText("不是最佳候选；最佳为 9600 baud（100 分）。") {
-		t.Errorf("missing row verdict, texts: %q", tt.Texts())
+	row := a.results[a.selected]
+	if row.Baud != baud.All[2] || row.Pending {
+		t.Errorf("selected = %+v, want the clicked row %d", row, baud.All[2])
+	}
+	want := fmt.Sprintf("不是最佳候选；最佳为 %d baud（%d分）。", a.results[0].Baud, a.results[0].Analysis.Score)
+	if !tt.HasText(want) {
+		t.Errorf("missing row verdict %q, texts: %q", want, tt.Texts())
 	}
 }
 
 func TestViewNoData(t *testing.T) {
 	a := sampleApp()
-	a.results = []baud.Result{
-		{Baud: 9600, Analysis: baud.Analyze(nil)},
-		{Baud: 115200, Analysis: baud.Analyze(nil)},
-	}
-	baud.Rank(a.results)
+	a.resetResults()
 	a.selected = -1
-	a.status = "未收到任何数据 · 设备可能不会主动输出，或需要更长的采样"
+	a.status = "未收到任何数据 ·设备可能不会主动输出，或需要更长的采样"
 	a.statusLevel = statusWarn
 	tt := ui.NewTester(a.view, 1120, 760)
-	if !tt.HasText("没有收到数据") {
+	if !tt.HasText("还没有可用样本") {
 		t.Errorf("missing no-data detail, texts: %q", tt.Texts())
 	}
-	if !tt.HasText("未收到任何数据 · 设备可能不会主动输出，或需要更长的采样") {
+	if !tt.HasText("未收到任何数据 ·设备可能不会主动输出，或需要更长的采样") {
 		t.Error("missing no-data status")
+	}
+	if !tt.HasText("待测") {
+		t.Error("missing pending rows")
 	}
 }
 
 func TestViewMinimumSize(t *testing.T) {
 	a := sampleApp()
 	tt := ui.NewTester(a.view, 980, 680)
-	if !tt.HasText("候选波特率") || !tt.HasText("检测详情") {
+	if !tt.HasText("波特率测试结果") || !tt.HasText("检测详情") {
 		t.Errorf("minimum size misses cards, texts: %q", tt.Texts())
 	}
 	if path := os.Getenv("BAUDSCAN_SNAPSHOT_MIN"); path != "" {
 		writeSnapshot(t, tt, path)
+	}
+}
+
+func TestViewEmpty(t *testing.T) {
+	a := &app{
+		duration:    durationOptions[1].Label,
+		selected:    -1,
+		status:      "未发现串口 ·接入设备后点击刷新",
+		statusLevel: statusWarn,
+	}
+	tt := ui.NewTester(a.view, 1120, 760)
+	if !tt.HasText("未发现串口设备") {
+		t.Errorf("missing empty state, texts: %q", tt.Texts())
 	}
 }
 
@@ -123,16 +153,22 @@ func writeSnapshot(t *testing.T, tt *ui.Tester, path string) {
 	}
 }
 
-func TestViewEmpty(t *testing.T) {
-	a := &app{
-		preset:      baud.Presets[0].Name,
-		duration:    durationOptions[1].Label,
-		selected:    -1,
-		status:      "未发现串口 · 接入设备后点击刷新",
-		statusLevel: statusWarn,
+func TestViewUnsupportedRow(t *testing.T) {
+	a := sampleApp()
+	a.store(baud.Result{Baud: 250000, Err: baud.FriendlyError(syscall.EINVAL), Unsupported: true})
+	a.manualPick = true
+	a.selected = 0
+	for i, r := range a.results {
+		if r.Baud == 250000 {
+			a.selected = i
+			break
+		}
 	}
 	tt := ui.NewTester(a.view, 1120, 760)
-	if !tt.HasText("未发现串口设备") {
-		t.Errorf("missing empty state, texts: %q", tt.Texts())
+	if !tt.HasText("设备不支持") || !tt.HasText("驱动不支持该速率") {
+		t.Errorf("missing unsupported detail, texts: %q", tt.Texts())
+	}
+	if path := os.Getenv("BAUDSCAN_SNAPSHOT_UNSUPPORTED"); path != "" {
+		writeSnapshot(t, tt, path)
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -12,19 +13,100 @@ import (
 func fakePorts(names ...string) []ports.Port {
 	out := make([]ports.Port, len(names))
 	for i, name := range names {
-		out[i] = ports.Port{Name: name, Label: "USB 串口", USB: true}
+		out[i] = ports.Port{Name: name, Label: "USB串口", USB: true}
 	}
 	return out
 }
 
-func TestRefreshPortsChoosesFirstAndKeepsChoice(t *testing.T) {
-	usb := fakePorts("/dev/cu.usbserial-1", "/dev/cu.usbserial-2")
+func newTestApp() *app {
 	a := &app{
-		selected: -1,
 		listPorts: func() ([]ports.Port, error) {
-			return usb, nil
+			return fakePorts("/dev/cu.usbserial-1"), nil
 		},
+		duration: durationOptions[2].Label,
 	}
+	a.resetResults()
+	return a
+}
+
+func TestResetResultsListsEveryRate(t *testing.T) {
+	a := newTestApp()
+	if len(a.results) != len(baud.All) {
+		t.Fatalf("results = %d, want %d rows", len(a.results), len(baud.All))
+	}
+	if a.selected != -1 {
+		t.Errorf("selected = %d, want -1 before a scan", a.selected)
+	}
+	for i, r := range a.results {
+		if r.Baud != baud.All[i] || !r.Pending {
+			t.Errorf("row %d = %+v, want pending %d", i, r, baud.All[i])
+		}
+	}
+	if a.doneCount() != 0 {
+		t.Errorf("doneCount = %d, want0", a.doneCount())
+	}
+}
+
+func TestStoreFillsRowsAndRanks(t *testing.T) {
+	a := newTestApp()
+	text := []byte("$GNGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*47\r\n")
+	a.store(baud.Result{Baud: 9600, Bytes: len(text), Data: text, Analysis: baud.Analyze(text)})
+	a.store(baud.Result{Baud: 4000000, Bytes: 4, Analysis: baud.Analyze([]byte{0x00, 0xff, 0x11, 0x22})})
+
+	if len(a.results) != len(baud.All) {
+		t.Fatalf("rows = %d, want the full list %d", len(a.results), len(baud.All))
+	}
+	if a.results[0].Baud != 9600 || a.results[0].Pending {
+		t.Errorf("top row = %+v, want the sampled9600", a.results[0])
+	}
+	if a.doneCount() != 2 {
+		t.Errorf("doneCount = %d, want2", a.doneCount())
+	}
+	// Pending rows stay after every sampled row.
+	seenPending := false
+	for _, r := range a.results {
+		if r.Pending {
+			seenPending = true
+			continue
+		}
+		if seenPending {
+			t.Fatalf("sampled row %+v after a pending row", r)
+		}
+	}
+	if a.results[len(a.results)-1].Pending == false {
+		t.Error("last row is sampled, want pending rows at the end")
+	}
+}
+
+func TestSelectBestPrefersData(t *testing.T) {
+	a := newTestApp()
+	text := []byte("temperature:23.5 C\r\n")
+	a.store(baud.Result{Baud: 9600, Analysis: baud.Analyze(nil)})
+	a.selectBest()
+	if a.selected != -1 {
+		t.Errorf("selected = %d with no data anywhere, want -1", a.selected)
+	}
+	a.store(baud.Result{Baud: 115200, Bytes: len(text), Data: text, Analysis: baud.Analyze(text)})
+	a.selectBest()
+	if a.selected < 0 || a.results[a.selected].Baud != 115200 {
+		t.Errorf("selected = %d, want the row with data", a.selected)
+	}
+	// A click pins the choice; later samples do not move it.
+	a.manualPick = true
+	a.store(baud.Result{Baud: 9600, Bytes: len(text), Data: text, Analysis: baud.Analyze(text)})
+	a.selectBest()
+	if a.results[a.selected].Baud != 115200 {
+		t.Errorf("selected %d, want the pinned115200", a.results[a.selected].Baud)
+	}
+}
+
+func TestRefreshPortsKeepsChoiceAndRows(t *testing.T) {
+	a := newTestApp()
+	if err := a.listPorts; err == nil {
+		t.Fatal("test setup: listPorts must be set")
+	}
+	usb := fakePorts("/dev/cu.usbserial-1", "/dev/cu.usbserial-2")
+	a.listPorts = func() ([]ports.Port, error) { return usb, nil }
 	a.refreshPorts(false)
 	if a.port != usb[0].Name {
 		t.Fatalf("port = %q, want the first port", a.port)
@@ -33,26 +115,24 @@ func TestRefreshPortsChoosesFirstAndKeepsChoice(t *testing.T) {
 		t.Errorf("status = %q (%v)", a.status, a.statusLevel)
 	}
 
-	// A device that stays plugged in keeps the user's choice.
 	a.port = usb[1].Name
 	a.refreshPorts(true)
 	if a.port != usb[1].Name {
 		t.Errorf("port = %q after refresh, want the kept choice", a.port)
 	}
-	if a.statusLevel != statusNormal {
-		t.Errorf("status level = %v, want normal", a.statusLevel)
+	if len(a.results) != len(baud.All) {
+		t.Errorf("rows = %d, want the full list", len(a.results))
 	}
 }
 
-func TestRefreshPortsWhenEmpty(t *testing.T) {
-	a := &app{
-		selected:  0,
-		results:   []baud.Result{{Baud: 9600}},
-		listPorts: func() ([]ports.Port, error) { return nil, nil },
-	}
+func TestRefreshPortsResetsRowsWhenPortGoes(t *testing.T) {
+	a := newTestApp()
+	text := []byte("hello world\r\n")
+	a.store(baud.Result{Baud: 9600, Bytes: len(text), Data: text, Analysis: baud.Analyze(text)})
+	a.listPorts = func() ([]ports.Port, error) { return nil, nil }
 	a.refreshPorts(true)
-	if a.port != "" || a.selected != -1 || a.results != nil {
-		t.Errorf("port = %q, selected = %d, results = %d; want empty", a.port, a.selected, len(a.results))
+	if a.port != "" || a.doneCount() != 0 {
+		t.Errorf("port = %q, done = %d; want an empty port and fresh rows", a.port, a.doneCount())
 	}
 	if a.statusLevel != statusWarn {
 		t.Errorf("status level = %v, want warning", a.statusLevel)
@@ -60,39 +140,34 @@ func TestRefreshPortsWhenEmpty(t *testing.T) {
 }
 
 func TestRefreshPortsError(t *testing.T) {
-	a := &app{
-		port:      "/dev/cu.usb",
-		selected:  0,
-		results:   []baud.Result{{Baud: 9600}},
-		listPorts: func() ([]ports.Port, error) { return nil, errors.New("no access") },
-	}
+	a := newTestApp()
+	a.listPorts = func() ([]ports.Port, error) { return nil, errors.New("no access") }
 	a.refreshPorts(true)
-	if a.statusLevel != statusBad || a.port != "" || len(a.results) != 0 {
-		t.Errorf("port = %q, results = %d, status = %q (%v)", a.port, len(a.results), a.status, a.statusLevel)
+	if a.statusLevel != statusBad || a.port != "" {
+		t.Errorf("port = %q, status = %q (%v)", a.port, a.status, a.statusLevel)
 	}
 }
 
 func TestFinishScanStatuses(t *testing.T) {
 	text := []byte("$GNGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*47\r\n")
-	a := &app{}
-	a.results = []baud.Result{
-		{Baud: 9600, Bytes: len(text), Data: text, Analysis: baud.Analyze(text)},
-	}
+	a := newTestApp()
+	a.store(baud.Result{Baud: 9600, Bytes: len(text), Data: text, Analysis: baud.Analyze(text)})
+	a.selectBest()
 	a.finishScan(nil, 2*time.Second)
 	if a.statusLevel != statusGood {
 		t.Errorf("text result: status = %q (%v), want good", a.status, a.statusLevel)
 	}
-	if !a.hasData() {
-		t.Error("hasData = false with data")
-	}
 
-	a.results = []baud.Result{
-		{Baud: 9600, Analysis: baud.Analyze(nil)},
-		{Baud: 115200, Analysis: baud.Analyze(nil)},
-	}
+	a = newTestApp()
 	a.finishScan(nil, time.Second)
 	if a.statusLevel != statusWarn || a.hasData() {
 		t.Errorf("no data: status = %q (%v), hasData = %v", a.status, a.statusLevel, a.hasData())
+	}
+
+	a = newTestApp()
+	a.finishScan(context.Canceled, time.Second)
+	if a.statusLevel != statusNormal {
+		t.Errorf("canceled: status = %q (%v), want normal", a.status, a.statusLevel)
 	}
 }
 
@@ -108,22 +183,52 @@ func TestCloseRace(t *testing.T) {
 	if a.closeRace() {
 		t.Error("closeRace = true for a clear winner")
 	}
+	a.results[1].Pending = true
+	if a.closeRace() {
+		t.Error("closeRace = true with a pending runner-up")
+	}
 }
 
-func TestDurationAndPreset(t *testing.T) {
-	a := &app{duration: "5.0 秒", preset: "扩展"}
+func TestSampleDurationAndEstimate(t *testing.T) {
+	a := &app{duration: "5.0秒"}
 	if got := a.sampleDuration(); got != 5*time.Second {
 		t.Errorf("duration = %v", got)
 	}
-	if got := a.selectedPreset().Name; got != "扩展" {
-		t.Errorf("preset = %q", got)
-	}
 	a.duration = "unknown"
-	a.preset = "unknown"
 	if got := a.sampleDuration(); got != time.Second {
 		t.Errorf("fallback duration = %v", got)
 	}
-	if got := a.selectedPreset().Name; got != baud.Presets[0].Name {
-		t.Errorf("fallback preset = %q", got)
+	want := time.Duration(len(baud.All)) * (time.Second + baud.DefaultSettle)
+	if got := a.estimate(); got != want+baud.OpenDelay {
+		t.Errorf("estimate = %v, want %v", got, want+baud.OpenDelay)
+	}
+}
+
+func TestRateListIsComplete(t *testing.T) {
+	seen := make(map[int]bool, len(baud.All))
+	for _, rate := range baud.All {
+		if rate <= 0 || seen[rate] {
+			t.Errorf("bad or duplicate rate %d", rate)
+		}
+		seen[rate] = true
+	}
+	for _, rate := range baud.Standard {
+		if !seen[rate] {
+			t.Errorf("standard rate %d missing from All", rate)
+		}
+	}
+	for _, rate := range baud.Common {
+		if !seen[rate] {
+			t.Errorf("common rate %d missing from All", rate)
+		}
+	}
+	if len(baud.All) != len(baud.Standard) {
+		t.Errorf("All = %d rates, Standard = %d", len(baud.All), len(baud.Standard))
+	}
+	// Common rates come first, so a common device is found early.
+	for i, rate := range baud.Common {
+		if baud.All[i] != rate {
+			t.Errorf("All[%d] = %d, want common rate %d", i, baud.All[i], rate)
+		}
 	}
 }

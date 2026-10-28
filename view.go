@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -25,65 +26,61 @@ func (a *app) header(c *ui.Context) {
 	ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).Children(func() {
 		ui.Column(c).Gap(2).Children(func() {
 			ui.Text(c, "串口波特率扫描").FontSize(25).Bold()
-			ui.Text(c, "只读监听设备输出，自动找出正确的波特率").FontSize(12).TextColor(t.TextMuted)
+			ui.Text(c, "只读监听设备输出，逐档测试全部波特率").FontSize(12).TextColor(t.TextMuted)
 		})
 		ui.Spacer(c)
-		pill(c, "只读模式 · 不发送数据", t.Success)
+		pill(c, "只读模式 ·不发送数据", t.Success)
 	})
 }
 
 func (a *app) controls(c *ui.Context) {
 	t := c.Theme()
-	ui.Column(c).FillWidth().Padding(14).Gap(11).Background(t.Surface).Border(1, t.Border).Radius(12).Children(func() {
-		ui.Row(c).FillWidth().AlignItems(ui.End).Gap(10).Children(func() {
-			ui.Column(c).Grow(1).MinWidth(210).Gap(5).Children(func() {
-				fieldLabel(c, "串口设备")
-				ui.Row(c).FillWidth().Gap(6).Children(func() {
-					if len(a.ports) == 0 {
-						ui.Row(c).Height(30).Grow(1).Padding(4, 10).Border(1, t.Border).Radius(6).
-							Background(t.Background).AlignItems(ui.Center).Children(func() {
-							ui.Text(c, "未发现串口设备").FontSize(12).TextColor(t.TextMuted).SingleLine()
-						})
-					} else {
-						options := make([]string, len(a.ports))
-						for i, p := range a.ports {
-							options[i] = p.Name
-						}
-						if ui.Select(c, &a.port, options).Label("串口设备").Disabled(a.scanning).Changed() {
-							a.results = nil
-							a.selected = -1
-							a.previewFor = ""
-							a.status = fmt.Sprintf("已选择 %s（%s）", a.port, a.portLabel(a.port))
-							a.statusLevel = statusNormal
-						}
-					}
-					ui.Button(c, "刷新").Width(58).Disabled(a.scanning).OnClick(func() {
-						a.refreshPorts(true)
+	ui.Column(c).FillWidth().Padding(14).Gap(10).Background(t.Surface).Border(1, t.Border).Radius(12).Children(func() {
+		ui.Column(c).FillWidth().Gap(5).Children(func() {
+			fieldLabel(c, "串口设备")
+			ui.Row(c).FillWidth().Gap(6).Children(func() {
+				if len(a.ports) == 0 {
+					ui.Row(c).Height(30).Grow(1).Shrink(1).Padding(4, 10).Border(1, t.Border).Radius(6).
+						Background(t.Background).AlignItems(ui.Center).Children(func() {
+						ui.Text(c, "未发现串口设备").FontSize(12).TextColor(t.TextMuted).SingleLine()
 					})
+				} else {
+					options := make([]string, len(a.ports))
+					for i, p := range a.ports {
+						options[i] = p.Name
+					}
+					if ui.Select(c, &a.port, options).Label("串口设备").Disabled(a.scanning).Changed() {
+						a.resetResults()
+						a.status = fmt.Sprintf("已选择 %s（%s）·将测试全部 %d档", a.port, a.portLabel(a.port), len(baud.All))
+						a.statusLevel = statusNormal
+					}
+				}
+				ui.Button(c, "刷新").Width(58).Shrink(0).Disabled(a.scanning).OnClick(func() {
+					a.refreshPorts(true)
+				})
+			})
+		})
+
+		ui.Row(c).FillWidth().AlignItems(ui.End).Gap(8).Children(func() {
+			ui.Column(c).Grow(1).Gap(3).Children(func() {
+				ui.Text(c, a.coverageLine()).FontSize(11).TextColor(t.TextMuted).SingleLine()
+				ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+					ui.Box(c).Width(7).Height(7).Radius(4).Background(a.statusColor(t))
+					ui.Text(c, a.status).FontSize(12).TextColor(a.statusColor(t)).SingleLine()
 				})
 			})
 
-			ui.Column(c).Width(132).Gap(5).Children(func() {
-				fieldLabel(c, "扫描范围")
-				ui.Select(c, &a.preset, presetNames()).Label("扫描范围").Disabled(a.scanning).Width(132)
-			})
-
-			ui.Column(c).Width(126).Gap(5).Children(func() {
+			ui.Column(c).Width(150).Shrink(0).Gap(5).Children(func() {
 				fieldLabel(c, "每档采样")
 				labels := make([]string, len(durationOptions))
 				for i, d := range durationOptions {
 					labels[i] = d.Label
 				}
-				ui.Select(c, &a.duration, labels).Label("每档采样时长").Disabled(a.scanning).Width(126)
+				ui.Select(c, &a.duration, labels).Label("每档采样时长").Disabled(a.scanning).Width(150)
 			})
 
-			ui.PrimaryButton(c, "开始扫描").Width(108).Disabled(a.scanning || a.port == "").OnClick(a.startScan)
-			ui.Button(c, "停止").Width(66).Disabled(!a.scanning).OnClick(a.stopScan)
-		})
-
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
-			ui.Box(c).Width(7).Height(7).Radius(4).Background(a.statusColor(t))
-			ui.Text(c, a.status).FontSize(12).TextColor(a.statusColor(t)).Grow(1)
+			ui.PrimaryButton(c, "开始扫描").Width(112).Shrink(0).Disabled(a.scanning || a.port == "").OnClick(a.startScan)
+			ui.Button(c, "停止").Width(70).Shrink(0).Disabled(!a.scanning).OnClick(a.stopScan)
 		})
 
 		if a.scanning {
@@ -92,82 +89,111 @@ func (a *app) controls(c *ui.Context) {
 	})
 }
 
+// coverageLine states how many rates the next scan covers and how long it
+// takes, so the cost of a full sweep is visible before it starts.
+func (a *app) coverageLine() string {
+	tested := a.doneCount()
+	if tested == 0 || tested == len(a.results) {
+		return fmt.Sprintf("全部 %d档 ·预计 %s", len(baud.All), shortDuration(a.estimate()))
+	}
+	return fmt.Sprintf("%d/%d档已测 ·全部 %d档需 %s", tested, len(baud.All), len(baud.All), shortDuration(a.estimate()))
+}
+
 func (a *app) resultsCard(c *ui.Context) {
 	t := c.Theme()
 	ui.Column(c).Grow(1).FillHeight().Background(t.Surface).Border(1, t.Border).Radius(12).Clip().Children(func() {
 		ui.Row(c).FillWidth().Padding(14, 14, 14, 8).AlignItems(ui.Center).Gap(8).Children(func() {
-			ui.Text(c, "候选波特率").FontSize(13).Bold()
-			if len(a.results) > 0 {
-				ui.Textf(c, "· %d 个", len(a.results)).FontSize(11).TextColor(t.TextMuted)
-			}
+			ui.Text(c, "波特率测试结果").FontSize(13).Bold()
+			ui.Textf(c, "· %d档 ·已测 %d", len(a.results), a.doneCount()).FontSize(11).TextColor(t.TextMuted)
 			ui.Spacer(c)
 			if a.scanning {
-				ui.Text(c, "扫描中").FontSize(11).TextColor(t.Accent)
+				ui.Textf(c, "%.0f%%", a.progress*100).FontSize(11).TextColor(t.Accent)
 			}
 		})
 
 		if len(a.results) == 0 {
 			a.emptyResults(c)
-		} else {
-			ui.Column(c).Grow(1).Padding(0, 6).Children(func() {
-				a.table.Selected = &a.selected
-				a.table.Key = func(row int) any { return a.results[row].Baud }
-				a.table.Label = func(row int) string {
-					r := a.results[row]
-					return fmt.Sprintf("%d baud，%s", r.Baud, baud.KindLabel(r.Analysis.Kind))
-				}
-				columns := []ui.TableColumn{
-					{Title: "波特率", Width: 92, Align: ui.End},
-					{Title: "评分", Width: 58, Align: ui.End},
-					{Title: "数据", Width: 80, Align: ui.End},
-					{Title: "类型", Width: 118},
-					{Title: "样本", MinWidth: 150},
-				}
-				ui.Table(c, &a.table, columns, len(a.results), func(row, col int) {
-					a.tableCell(c, row, col)
-				}).Grow(1)
-			})
+			return
+		}
+		a.table.Selected = &a.selected
+		a.table.Key = func(row int) any { return a.results[row].Baud }
+		a.table.Label = func(row int) string {
+			r := a.results[row]
+			if r.Pending {
+				return fmt.Sprintf("%d baud，待测", r.Baud)
+			}
+			return fmt.Sprintf("%d baud，%s", r.Baud, baud.KindLabel(r.Analysis.Kind))
+		}
+		columns := []ui.TableColumn{
+			{Title: "波特率", Width: 92, Align: ui.End},
+			{Title: "评分", Width: 58, Align: ui.End},
+			{Title: "数据", Width: 74, Align: ui.End},
+			{Title: "类型", Width: 118},
+			{Title: "样本", MinWidth: 150},
+		}
+		if ui.Table(c, &a.table, columns, len(a.results), func(row, col int) {
+			a.tableCell(c, row, col)
+		}).Grow(1).Changed() {
+			// A click or a key chooses a row: the detail panel follows the
+			// user, not the best score, until the next scan.
+			a.manualPick = true
 		}
 
-		if len(a.results) > 0 {
-			ui.Row(c).FillWidth().Padding(9, 14).Children(func() {
-				ui.Text(c, "按评分排序 · 点击一行查看原始字节").FontSize(11).TextColor(t.TextMuted)
-			})
-		}
+		ui.Row(c).FillWidth().Padding(9, 14).Children(func() {
+			ui.Text(c, "按评分排序 ·待测项排在最后 ·点击一行查看原始字节").
+				FontSize(11).TextColor(t.TextMuted)
+		})
 	})
 }
 
 func (a *app) tableCell(c *ui.Context, row, col int) {
+	t := c.Theme()
 	r := a.results[row]
-	switch col {
-	case 0:
+	if col == 0 {
 		ui.Text(c, baud.BaudLabel(r.Baud)).Font("monospace").FontSize(12).Bold()
-	case 1:
-		if r.Err != "" {
-			ui.Text(c, "—")
-		} else {
-			ui.Textf(c, "%d", r.Analysis.Score).FontSize(12)
+		return
+	}
+	if col == 1 {
+		if r.Pending || r.Err != "" {
+			ui.Text(c, "—").TextColor(t.TextMuted)
+			return
 		}
-	case 2:
+		ui.Textf(c, "%d", r.Analysis.Score).FontSize(12)
+		return
+	}
+	if col == 2 {
+		if r.Pending {
+			ui.Text(c, "—").TextColor(t.TextMuted)
+			return
+		}
 		ui.Text(c, baud.FormatBytes(r.Bytes)).FontSize(12)
-	case 3:
+		return
+	}
+	if col == 3 {
+		if r.Pending {
+			ui.Text(c, "待测").FontSize(12).TextColor(t.TextMuted)
+			return
+		}
 		label := baud.KindLabel(r.Analysis.Kind)
-		if r.Err != "" {
+		if r.Unsupported {
+			label = "不支持"
+		} else if r.Err != "" {
 			label = "错误"
 		} else if row == 0 && r.Analysis.Score >= 50 {
-			label += " · 最佳"
+			label += " ·最佳"
 		}
 		ui.Text(c, label).FontSize(12).SingleLine()
-	case 4:
-		sample := ""
-		switch {
-		case r.Err != "":
-			sample = r.Err
-		case len(r.Data) > 0:
-			sample = baud.Preview(r.Data, 100)
-		}
-		ui.Text(c, sample).Font("monospace").FontSize(11).SingleLine()
+		return
 	}
+	sample := ""
+	if r.Unsupported {
+		sample = "驱动不支持该速率"
+	} else if r.Err != "" {
+		sample = r.Err
+	} else if !r.Pending && len(r.Data) > 0 {
+		sample = baud.Preview(r.Data, 100)
+	}
+	ui.Text(c, sample).Font("monospace").FontSize(11).SingleLine()
 }
 
 func (a *app) emptyResults(c *ui.Context) {
@@ -205,6 +231,17 @@ func (a *app) detailCard(c *ui.Context) {
 			return
 		}
 		r := a.results[a.selected]
+		if r.Pending {
+			a.pendingDetail(c, r)
+			return
+		}
+		if r.Unsupported {
+			ui.Text(c, "设备不支持").FontSize(16).Bold().TextColor(t.Warning)
+			ui.Text(c, "串口驱动拒绝了这个波特率，扫描会自动跳过。").FontSize(12).TextColor(t.TextMuted)
+			ui.Spacer(c)
+			ui.Text(c, "较低或常见的速率仍可正常测试，其它档位不受影响。").FontSize(11).TextColor(t.TextMuted)
+			return
+		}
 		if r.Err != "" {
 			ui.Text(c, "无法读取").FontSize(16).Bold().TextColor(t.Danger)
 			ui.Text(c, r.Err).FontSize(12).TextColor(t.Danger)
@@ -220,7 +257,7 @@ func (a *app) detailCard(c *ui.Context) {
 			pill(c, confidenceLabel(a, a.selected), confidenceColor(a, a.selected, t))
 		})
 		ui.Text(c, a.scoreLine()).FontSize(11).TextColor(t.TextMuted)
-		ui.Text(c, fmt.Sprintf("%s · %s · %d 行", baud.KindLabel(r.Analysis.Kind), baud.FormatBytes(r.Bytes), r.Analysis.Lines)).
+		ui.Text(c, fmt.Sprintf("%s · %s · %d行", baud.KindLabel(r.Analysis.Kind), baud.FormatBytes(r.Bytes), r.Analysis.Lines)).
 			FontSize(11).TextColor(t.TextMuted)
 
 		ui.Row(c).FillWidth().Gap(8).Children(func() {
@@ -233,13 +270,13 @@ func (a *app) detailCard(c *ui.Context) {
 				sub = fmt.Sprintf("周期 %d B", r.Analysis.RepeatLag)
 			}
 			metric(c, "重复结构", fmt.Sprintf("%.2f", r.Analysis.Repeat), sub)
-			metric(c, "字节熵", fmt.Sprintf("%.1f", r.Analysis.Entropy), "bit / 字节")
+			metric(c, "字节熵", fmt.Sprintf("%.1f", r.Analysis.Entropy), "bit /字节")
 		})
 
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "原始字节").FontSize(12).FontWeight(600)
 			ui.Spacer(c)
-			ui.Textf(c, "前 %d 字节", minInt(len(r.Data), 192)).FontSize(11).TextColor(t.TextMuted)
+			ui.Textf(c, "前 %d字节", minInt(len(r.Data), 192)).FontSize(11).TextColor(t.TextMuted)
 		})
 
 		key := fmt.Sprintf("%s/%d/%d", a.port, r.Baud, r.Bytes)
@@ -258,16 +295,31 @@ func (a *app) detailCard(c *ui.Context) {
 	})
 }
 
+func (a *app) pendingDetail(c *ui.Context, r baud.Result) {
+	t := c.Theme()
+	ui.Row(c).FillWidth().AlignItems(ui.Baseline).Gap(7).Children(func() {
+		ui.Text(c, baud.BaudLabel(r.Baud)).Font("monospace").FontSize(32).Bold().TextColor(t.TextMuted)
+		ui.Text(c, "baud").FontSize(11).TextColor(t.TextMuted)
+		ui.Spacer(c)
+		pill(c, "待测", t.TextMuted)
+	})
+	ui.Column(c).Grow(1).FillWidth().Center().Gap(6).Children(func() {
+		ui.Text(c, "⌁").FontSize(38).TextColor(t.TextMuted)
+		ui.Text(c, "这一档还没测试").FontSize(13).FontWeight(600)
+		ui.Text(c, "扫描会按顺序走完全部档位").FontSize(11).TextColor(t.TextMuted)
+	})
+}
+
 func (a *app) emptyDetail(c *ui.Context) {
 	t := c.Theme()
-	title, subtitle := "尚未选择候选", "扫描完成后，点击一行查看原始字节"
+	title, subtitle := "尚未选择候选", "扫描开始后，点击一行查看原始字节"
 	switch {
 	case a.scanning:
 		title = "正在监听串口"
 		subtitle = "结果会随扫描进度出现"
 	case len(a.results) > 0 && !a.hasData():
-		title = "没有收到数据"
-		subtitle = "试试更长的每档采样，或确认设备会主动输出"
+		title = "还没有可用样本"
+		subtitle = "开始扫描后将测试全部档位"
 	}
 	ui.Column(c).Grow(1).FillWidth().Center().Gap(6).Children(func() {
 		ui.Text(c, "⌁").FontSize(38).TextColor(t.TextMuted)
@@ -278,7 +330,8 @@ func (a *app) emptyDetail(c *ui.Context) {
 
 func (a *app) footer(c *ui.Context) {
 	t := c.Theme()
-	ui.Text(c, "只读扫描，不会向设备发送任何字节 · 自动识别对加密或随机二进制流不可靠").
+	ui.Text(c, fmt.Sprintf("只读扫描，不会向设备发送任何字节 ·逐档测试 %d个标准波特率（8N1）·单次全扫约 %s",
+		len(baud.All), shortDuration(a.estimate()))).
 		FontSize(11).TextColor(t.TextMuted)
 }
 
@@ -287,23 +340,21 @@ func (a *app) scoreLine() string {
 		return ""
 	}
 	r := a.results[a.selected]
-	line := fmt.Sprintf("评分 %d / 100", r.Analysis.Score)
+	line := fmt.Sprintf("评分 %d /100", r.Analysis.Score)
 	switch {
 	case a.selected == 0 && len(a.results) > 1 && a.margin() > 0:
-		line += fmt.Sprintf(" · 领先第二名 %d 分", a.margin())
-	case a.selected == 0 && len(a.results) == 1:
-		line += " · 只测试了一档"
+		line += fmt.Sprintf(" ·领先第二名 %d分", a.margin())
 	case a.selected > 0:
-		line += fmt.Sprintf(" · 比最佳 %d baud 低 %d 分", a.results[0].Baud, a.results[0].Analysis.Score-r.Analysis.Score)
+		line += fmt.Sprintf(" ·比最佳 %d baud低 %d分", a.results[0].Baud, a.results[0].Analysis.Score-r.Analysis.Score)
 	}
 	return line
 }
 
 func (a *app) verdict(r baud.Result) string {
 	switch {
-	case a.selected > 0:
-		return fmt.Sprintf("不是最佳候选；最佳为 %d baud（%d 分）。", a.results[0].Baud, a.results[0].Analysis.Score)
-	case a.closeRace():
+	case a.selected > 0 && a.results[0].Analysis.Score > r.Analysis.Score:
+		return fmt.Sprintf("不是最佳候选；最佳为 %d baud（%d分）。", a.results[0].Baud, a.results[0].Analysis.Score)
+	case a.selected == 0 && a.closeRace():
 		return "前两名评分接近，建议对比两组原始字节后确认。"
 	}
 	switch r.Analysis.Kind {
@@ -345,14 +396,6 @@ func pill(c *ui.Context, text string, color ui.Color) {
 	}
 	ui.Text(c, text).FontSize(10).FontWeight(600).TextColor(color).
 		Padding(3, 9).Radius(20).Background(ui.RGBA(color.R, color.G, color.B, alpha))
-}
-
-func presetNames() []string {
-	names := make([]string, len(baud.Presets))
-	for i, p := range baud.Presets {
-		names[i] = p.Name
-	}
-	return names
 }
 
 func (a *app) statusColor(t *ui.Theme) ui.Color {
@@ -403,3 +446,5 @@ func minInt(a, b int) int {
 	}
 	return b
 }
+
+var _ = time.Second

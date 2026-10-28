@@ -5,55 +5,80 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"syscall"
 	"time"
 
 	"go.bug.st/serial"
 )
 
-// Preset is a set of baud rates to try, in the order that finds common
-// devices first.
-type Preset struct {
-	Name  string
-	Rates []int
+// Common lists the rates most devices use. A scan tries them first, so a
+// common device is identified before the long tail is measured.
+var Common = []int{115200, 9600, 57600, 38400, 19200, 230400, 921600, 4800, 2400, 1200}
+
+// Standard lists every standard rate, ascending. Linux sets rates outside
+// its termios table with BOTHER and macOS with IOSSIOSPEED, and Windows
+// takes any rate in its DCB, so all of them are tried on every platform.
+var Standard = []int{
+	50, 75, 110, 134, 150, 200, 300, 600, 1200, 1800,
+	2400, 4800, 7200, 9600, 14400, 19200, 28800, 38400, 57600, 76800,
+	115200, 128000, 230400, 250000, 256000, 460800, 500000, 576000, 921600,
+	1000000, 1152000, 1500000, 2000000, 2500000, 3000000, 3500000, 4000000,
 }
 
-// Common holds the rates of most serial devices.
-var Common = []int{115200, 9600, 57600, 38400, 19200, 4800, 2400, 1200}
+// All is every rate a scan tests: Common first, then the rest ascending, so
+// the first results appear quickly and every standard rate is covered.
+var All = scanOrder(Standard, Common)
 
-// Extended adds the rates of faster and older devices.
-var Extended = []int{
-	115200, 9600, 57600, 38400, 230400, 19200, 460800, 4800,
-	921600, 250000, 2400, 1200, 500000, 300, 600,
+// scanOrder returns first, then every rate of all that it does not hold.
+func scanOrder(all, first []int) []int {
+	seen := make(map[int]bool, len(all))
+	out := make([]int, 0, len(all))
+	for _, rate := range first {
+		if !seen[rate] {
+			seen[rate] = true
+			out = append(out, rate)
+		}
+	}
+	for _, rate := range all {
+		if !seen[rate] {
+			seen[rate] = true
+			out = append(out, rate)
+		}
+	}
+	return out
 }
 
-// Presets are the scan ranges offered by the interface.
-var Presets = []Preset{
-	{Name: "常用", Rates: Common},
-	{Name: "扩展", Rates: Extended},
-}
-
-// Result is what one baud rate produced.
+// Result is what one baud rate produced. A rate the scan has not reached yet
+// is Pending, so the table can list every rate from the start.
 type Result struct {
 	Baud     int
 	Bytes    int
 	Data     []byte // the first few kilobytes, for preview
 	Analysis Analysis
 	Err      string
+	// Unsupported marks a rate the port or its driver refuses, rather
+	// than a sample that failed to read.
+	Unsupported bool
+	Pending     bool
 }
 
-// Rank sorts results from most to least likely, breaking ties by how
-// commonly a rate is used.
+// Rank sorts results from most to least likely, breaking ties by how early a
+// rate is scanned. Rates the scan has not reached go last.
 func Rank(results []Result) {
-	order := make(map[int]int, len(Extended))
-	for i, rate := range Extended {
+	order := make(map[int]int, len(All))
+	for i, rate := range All {
 		order[rate] = i
 	}
 	sort.SliceStable(results, func(i, j int) bool {
-		if results[i].Analysis.Score != results[j].Analysis.Score {
-			return results[i].Analysis.Score > results[j].Analysis.Score
+		a, b := &results[i], &results[j]
+		if a.Pending != b.Pending {
+			return !a.Pending
 		}
-		oi, iok := order[results[i].Baud]
-		oj, jok := order[results[j].Baud]
+		if a.Analysis.Score != b.Analysis.Score {
+			return a.Analysis.Score > b.Analysis.Score
+		}
+		oi, iok := order[a.Baud]
+		oj, jok := order[b.Baud]
 		switch {
 		case iok && jok:
 			return oi < oj
@@ -62,7 +87,7 @@ func Rank(results []Result) {
 		case jok:
 			return false
 		}
-		return results[i].Baud > results[j].Baud
+		return a.Baud > b.Baud
 	})
 }
 
@@ -96,8 +121,14 @@ type ScanOptions struct {
 const (
 	// DefaultSample is long enough for devices that emit a line per second.
 	DefaultSample = 900 * time.Millisecond
-	maxCapture    = 256 << 10
-	previewBytes  = 4096
+	// DefaultSettle is the quiet time after a rate change, so bytes the
+	// previous rate left in the driver's buffer are not counted.
+	DefaultSettle = 45 * time.Millisecond
+	// OpenDelay lets a board that resets on open finish booting.
+	OpenDelay  = 220 * time.Millisecond
+	maxCapture = 256 << 10
+
+	previewBytes = 4096
 )
 
 // Scanner samples a port. Open is serial.Open in the app, and a fake in
@@ -143,9 +174,7 @@ func (s *Scanner) Scan(ctx context.Context, opts ScanOptions) ([]Result, error) 
 	}
 
 	results := make([]Result, 0, len(rates))
-	// Opening a USB port can reset the board. Let it boot and flush the
-	// messages it printed before we start judging rates.
-	if !sleep(ctx, 220*time.Millisecond) {
+	if !sleep(ctx, OpenDelay) {
 		return results, ctx.Err()
 	}
 	_ = port.ResetInputBuffer()
@@ -156,7 +185,7 @@ func (s *Scanner) Scan(ctx context.Context, opts ScanOptions) ([]Result, error) 
 		}
 		if i > 0 {
 			if err := port.SetMode(&serial.Mode{BaudRate: rate, DataBits: 8, Parity: serial.NoParity, StopBits: serial.OneStopBit}); err != nil {
-				res := Result{Baud: rate, Err: FriendlyError(err)}
+				res := Result{Baud: rate, Err: FriendlyError(err), Unsupported: Unsupported(err)}
 				results = append(results, res)
 				emit(opts, Event{Index: i, Total: len(rates), Baud: rate, Result: &results[len(results)-1]})
 				continue
@@ -194,7 +223,7 @@ func withDefaults(opts ScanOptions) ScanOptions {
 		opts.Sample = DefaultSample
 	}
 	if opts.Settle <= 0 {
-		opts.Settle = 45 * time.Millisecond
+		opts.Settle = DefaultSettle
 	}
 	if opts.IdleAfter <= 0 {
 		opts.IdleAfter = 140 * time.Millisecond
@@ -220,10 +249,10 @@ func cleanRates(rates []int) []int {
 	return out
 }
 
-// readWindow reads until the sample time is up, or until the device has
-// sent data and then gone quiet. With an incorrect baud rate a stream
-// becomes random bytes, but those still arrive continuously; the idle rule
-// therefore shortens a good busy sample instead of favoring it.
+// readWindow reads until the sample time is up, or until the device has sent
+// data and then gone quiet. With an incorrect baud rate a stream becomes
+// random bytes, but those still arrive continuously; the idle rule therefore
+// shortens a good busy sample instead of favoring it.
 func readWindow(ctx context.Context, port serial.Port, opts ScanOptions) ([]byte, error) {
 	start := time.Now()
 	deadline := start.Add(opts.Sample)
@@ -284,7 +313,23 @@ func emit(opts ScanOptions, event Event) {
 }
 
 // FriendlyError turns the serial package's errors into Chinese advice.
+// Unsupported reports whether the port refused the rate itself, as macOS
+// does for rates its driver cannot program.
+func Unsupported(err error) bool {
+	if errors.Is(err, syscall.EINVAL) {
+		return true
+	}
+	var pe serial.PortError
+	if errors.As(err, &pe) {
+		return pe.Code() == serial.InvalidSpeed
+	}
+	return false
+}
+
 func FriendlyError(err error) string {
+	if errors.Is(err, syscall.EINVAL) {
+		return "此设备不支持该波特率"
+	}
 	var pe serial.PortError
 	if errors.As(err, &pe) {
 		switch pe.Code() {
@@ -293,7 +338,7 @@ func FriendlyError(err error) string {
 		case serial.PortNotFound:
 			return "串口不存在，设备可能已拔出"
 		case serial.PermissionDenied:
-			return "没有访问权限（Linux 请把用户加入 dialout 组）"
+			return "没有访问权限（Linux请把用户加入 dialout组）"
 		case serial.InvalidSpeed:
 			return "此设备不支持该波特率"
 		case serial.PortClosed:
