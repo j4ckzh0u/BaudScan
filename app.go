@@ -9,8 +9,8 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
-	"baudscan/internal/baud"
-	"baudscan/internal/ports"
+	"github.com/j4ckzh0u/BaudScan/internal/baud"
+	"github.com/j4ckzh0u/BaudScan/internal/ports"
 )
 
 type statusLevel int

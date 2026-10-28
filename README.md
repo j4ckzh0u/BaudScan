@@ -1,156 +1,311 @@
 <p align="center">
-  <img src="docs/screenshot.png" width="900" alt="BaudScan 界面">
+ <img src="docs/screenshot.png" width="900" alt="BaudScan 界面">
 </p>
-<p align="center"><sub>浅色主题 · <a href="docs/screenshot-dark.png">深色主题</a> · <a href="docs/screenshot-unsupported.png">驱动不支持某档时的提示</a></sub></p>
 
-# 串口波特率扫描（BaudScan）
+<h1 align="center">BaudScan</h1>
 
-接入一个未知波特率的串口设备，点击一次即可自动找出最可能的波特率。工具只读取串口，**不会向设备发送任何字节**。
+<p align="center">串口波特率自动识别工具 ·只读扫描 ·跨平台原生界面</p>
 
-使用 Go + [mygo](https://github.com/egoist/mygo) 原生 UI 编写，单个二进制，支持 macOS / Windows / Linux，无需 WebView 或前端构建。
+<p align="center">
+ <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+ <a href="https://go.dev/dl/"><img alt="Go" src="https://img.shields.io/badge/Go-1.27.3%2B-00ADD8.svg"></a>
+ <a href="https://github.com/egoist/mygo"><img alt="mygo" src="https://img.shields.io/badge/UI-mygo%20native-7c3aed.svg"></a>
+ <img alt="Platforms" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey">
+</p>
+
+---
+
+## 这是什么
+
+把一台未知波特率的设备接到电脑串口，传统做法是一个个波特率手动尝试：改一次、看一眼、再改一次。**BaudScan 把这件事变成一次点击**：它枚举串口，按顺序切换全部 37 档标准波特率，对每一档收一段数据并打分，最后按可信度排序，告诉你最可能的波特率是多少，并给出原始字节供你确认。
+
+工具**只读取串口，绝不向设备发送任何字节**，因此不会误触发命令、不会打断设备、不会写入配置。
+
+<p align="center">
+ <img src="docs/screenshot-dark.png" width="46%" alt="深色主题">
+ <img src="docs/screenshot-unsupported.png" width="46%" alt="驱动不支持某档时的提示">
+</p>
+<p align="center"><sub>左：深色主题。右：串口驱动拒绝某档速率时的提示（macOS 上 230400 以上常见）。</sub></p>
 
 ## 功能
 
-- 自动枚举串口，选择设备后一键扫描
-- 全量测试 37档标准波特率（50 – 4000000），无需选择范围
-- 表格一开始就列出全部档位，扫描逐行填充，待测项排在最后
-- 每档采样 0.4 / 0.6 / 1.0 / 2.0 / 5.0 秒可选，界面显示全扫预计耗时
-- 驱动拒绝的高速率标为“不支持”，不计入错误
-- 实时显示扫描进度，可随时停止
-- 按可信度排序候选，自动选中最佳结果
-- 展示可读字符比例、文本行数、重复结构、字节熵
-- 十六进制 + ASCII 原始样本，可选中复制
-- 只读扫描；打开一次串口后仅切换波特率，避免反复开关触发开发板复位
-- 纯 Go，无 cgo；可交叉编译到三大平台
+- **全量扫描**：一次走完 37 档标准波特率（50～4000000），不用先选范围。
+- **只读**：不发送任何探测字节，只监听设备本来就在输出的数据。
+- **单次打开**：整个扫描只 `open` 串口一次，之后仅切换波特率，避免反复开关触发开发板 DTR 复位。
+- **实时填充**：表格在扫描前就列出全部档位，边扫边填，"待测"排在末尾。
+- **可信度评分**：可读字符比例、文本行结构、周期性、字节熵综合打分，并给出"高、中、低置信度"。
+- 前两名分差 ≤6 且都在 30 分以上时，界面标记“存疑”。
+- **原始样本**：每档都能看十六进制 + ASCII 预览，支持选中复制。
+- **驱动能力识别**：驱动拒绝的速率标为"不支持"，不计入错误、不影响其它档位。
+- **可中断**：随时停止，已完成的结果保留。
+- **跨平台原生**：Go + [mygo](https://github.com/egoist/mygo) 原生 UI，无 WebView、无前端构建、无 cgo。
 
-## 识别原理
+## 截图
 
-对每个候选波特率：
+| 浅色 | 深色 |
+| --- | --- |
+| ![浅色](docs/screenshot.png) | ![深色](docs/screenshot-dark.png) |
 
-1. 以 8N1 打开串口（整个扫描只打开一次），等待设备稳定，清空输入缓冲。
-2. 切换到该波特率，读取一段数据；设备有输出后空闲则提前结束，否则等满采样时长。
-3. 计算四类特征：
-   - **可读字符比例**：正确的文本波特率会得到完整的 ASCII / UTF-8 文本；错误波特率接近随机字节。
-   - **文本行结构**：CR/LF、可打印行、行长度。
-   - **重复结构**：固定帧头、行周期等自相似性；可识别部分二进制协议。
-   - **字节熵**：排除均匀随机噪声和恒定电平。
-4. 综合评分并排序；前两名分数接近时标记“存疑”，提示对比原始样本。
+## 下载与安装
 
-扫描过程中不写串口，也不发送任何探测字符。串口打开本身可能拉高 DTR，部分开发板会因此复位一次；工具只在开始时打开一次，后续仅调用 `SetMode` 改波特率，避免每档都复位。
+从 [Releases](https://github.com/j4ckzh0u/BaudScan/releases)下载对应平台的 x64 产物：
 
-## 使用
+| 平台 | 文件 | 说明 |
+| --- | --- | --- |
+| macOS（Intel） | `BaudScan-<version>-macos-x64.dmg` | 打开后把 BaudScan 拖入 Applications |
+| Windows 10/11 x64 | `BaudScan-<version>-windows-x64.exe` | 单文件，双击运行，无控制台窗口 |
+| Linux x64 | `BaudScan-<version>-linux-x64` | `chmod +x` 后直接运行，需要 GTK3 |
 
-1. 用 USB 转串口线或开发板接入电脑。
-2. 打开 BaudScan，选择串口，点击“刷新”可重新扫描端口。
-3.选择每档采样时间，点击“开始扫描”（默认 1.0 秒，全扫约 39 秒）。
-4.等待结果。全部 37 档都会测到，最佳候选显示在右侧，包含评分、原始字节和判断依据。
+`SHA256SUMS` 内含三个产物的校验和：
 
-建议：
+```sh
+shasum -a256 -c SHA256SUMS
+```
 
--设备周期输出很慢时，把每档采样调到 2.0 或 5.0 秒；全扫耗时会相应变成约 78 秒或 195 秒。
-- 前两名接近时，点击两行分别查看十六进制样本，选择文本/帧结构更自然的一个。
-- Linux 没有串口权限时，把用户加入 `dialout` 组后重新登录：
-  ```sh
-  sudo usermod -aG dialout "$USER"
-  ```
-- macOS 上同时出现蓝牙端口时，优先选择 `usbmodem` / `usbserial` 端口。
+> **macOS 提示**：当前发布包使用 ad-hoc 签名，未做 Developer ID 签名与公证。首次打开若被 Gatekeeper 拦下，右键点击 App → 打开，或在终端执行
+> `xattr -dr com.apple.quarantine /Applications/BaudScan.app`。
+>
+> **Windows 提示**：exe 未做代码签名，SmartScreen 可能提示"未知发布者"，选择"更多信息 → 仍要运行"。
+>
+> **Linux 提示**：原生 UI 依赖 GTK3。Debian / Ubuntu 执行 `sudo apt install libgtk-3-0`；如需 `.deb` 与桌面入口，见 `build/release/linux-amd64/`（由 `mygo build` 生成）。没有串口权限时执行 `sudo usermod -aG dialout "$USER"` 后重新登录。
 
-## 支持范围
+## 快速开始
 
-默认只按 **8N1（8 数据位、无校验、1 停止位）** 尝试波特率，这也是绝大多数设备的选择。工具不检测校验位、停止位或数据位组合。
+1. 用 USB 转串口线或开发板把设备接到电脑。
+2. 打开 BaudScan，在"串口设备"里选择端口；设备刚插入时点"刷新"。
+3. 选择"每档采样"时长（默认 1.0 秒，全扫约 39 秒）。
+4. 点"开始扫描"。
+5. 看右侧详情：最可能的波特率、置信度、评分依据、原始字节。
 
-### 测试的 37 档波特率
+常见设备（115200、9600、57600、38400、19200 等）排在最前面扫描，因此通常几秒内就能看到正确结果，无需等全扫结束。
 
-`50,75,110,134,150,200,300,600,1200,1800,2400,4800,7200,9600,14400,19200,28800,38400,57600,76800,115200,128000,230400,250000,256000,460800,500000,576000,921600,1000000,1152000,1500000,2000000,2500000,3000000,3500000,4000000`
+### 采样时长怎么选
 
-扫描顺序先走常用速率（115200、9600、57600、38400、19200、230400、921600、4800、2400、1200），再补齐其余档位，因此常见设备的结果会先出现。最终表格按评分排序。
+| 每档采样 | 全扫耗时 | 适用 |
+| --- | --- | --- |
+| 0.4 秒 | 约 24 秒 | 高频、连续输出的设备（日志流、传感器） |
+| 0.6 秒 | 约 27 秒 | 大多数设备 |
+| 1.0 秒 | 约 39 秒 | 默认，每秒一行左右的设备 |
+| 2.0 秒 | 约 78 秒 | 慢速周期输出（2 秒一次） |
+| 5.0 秒 | 约 195 秒 | 极慢周期、或只在开机时吐一小段 |
 
-Linux用 `BOTHER`、macOS用 `IOSSIOSPEED`、Windows用 DCB设置非标准速率，所以37档在所有平台都会被尝试。macOS的部分串口驱动会拒绝230400以上速率，这些档位标为“不支持”，不影响其它档位。
+扫描会在"已经收到数据、并且之后安静了 140 ms"时提前结束该档，所以输出密集的设备实际耗时会短于上限。
 
-### 无法可靠识别的场景
+## 工作原理
 
-- 设备只在收到命令后才回复：工具不发送任何数据，因此收不到样本。
-- 输出是加密/压缩的随机二进制：没有可读文本或周期结构可供判断。
-- 极低占空比的一次性开机消息：采样窗口可能错过；可增大采样时间并重新扫描。
-- 使用非 8N1 格式的设备：可能完全读不到有效数据。
+### 1.打开与切换
+
+以 `8N1` 打开串口，等待 220 ms 让可能因 DTR 复位而重启的板子启动完，清空输入缓冲。之后每换一档波特率：
+
+- 调用驱动的速率设置接口；
+- 静置 45 ms，清空缓冲（丢弃上一档速率残留的字节）；
+- 开始采样窗口。
+
+### 2.采样窗口
+
+读取最长一个"每档采样"时长；满足下列任一条件即结束：
+
+- 已收到数据，且连续 140 ms 没有新字节，且已采样至少 320 ms；
+- 达到采样上限时长；
+- 累计 256 KiB（保护内存）；
+- 用户点了"停止"。
+
+### 3.评分
+
+对采样到的字节计算四组统计量，再合成两个假设的分数，取较高者：
+
+**文本假设**（正确的波特率通常把 ASCII / UTF-8 还原成可读文本）
+
+```
+text = clamp((可读字节占比 -0.42) /0.53)  #随机字节约0.4
+repeat = clamp((周期性 -0.01) /0.16)
+entropy = clamp((7.75 -字节熵) /2.6)
+clean = 1 - clamp(控制字节占比 /0.18)
+distinct = clamp((不同字节数 -1) /8)
+
+TextScore = 100 x (0.55*text +0.18*行结构 +0.10*repeat +0.10*entropy +0.07*clean)
+ x (0.72 +0.28*distinct)
+```
+
+**二进制假设**（部分设备输出定长帧，帧头重复但没有可读文本）
+
+```
+BinaryScore = 100 x (0.68*repeat +0.14*entropy +0.12*二进制干净度 +0.06*distinct)
+```
+
+其中"周期性"取 2～384 字节滞后区间内最高的字节重合率：真实协议的帧头、定长行会在这个区间反复出现，而错误波特率产生的随机字节不会。
+
+另外几条规则：
+
+- 不同字节数 ≤2 且长度 ≥6 → 判定"恒定电平"，得分 0（空数据、全 0、全 FF 都没有信息量）。
+- 数据过短会压低得分上限（<2 字节记 0，<4 字节 ≤30，<8 字节 ≤50，<16 字节 ≤70）。
+- 分数 <20，或文本特征极弱且二进制分数 <25 → 判定"噪声"。
+- 前两名分差 ≤6 且都在 30 分以上时，界面标记“存疑”。
+
+这些权重来自对文本流、UTF-8 中文流、随机噪声、恒定电平、定长二进制帧的单元测试与真实设备采样调参；它终究是启发式判断，不保证 100% 正确。
+
+### 4.排序
+
+先按分数降序；同分时按扫描顺序（常用速率优先）；未测的档位排在已测之后。
+
+## 支持的波特率
+
+37 档标准速率，升序：
+
+```
+50,75,110,134,150,200,300,600,1200,1800,
+2400,4800,7200,9600,14400,19200,28800,38400,
+57600,76800,115200,128000,230400,250000,256000,
+460800,500000,576000,921600,1000000,1152000,
+1500000,2000000,2500000,3000000,3500000,4000000
+```
+
+扫描顺序把常用速率提前：`115200,9600,57600,38400,19200,230400,921600,4800,2400,1200`，其余按升序补齐。
+
+各平台设置非标准速率的方式：
+
+| 平台 | 机制 | 备注 |
+| --- | --- | --- |
+| Linux | `termios2` + `BOTHER` | 任意速率；需要内核支持 |
+| macOS | `IOSSIOSPEED` ioctl | 取决于串口驱动；FTDI / CH34x / CP210x 通常支持到 921600 或更高，部分内置驱动只到 230400 |
+| Windows | `DCB.BaudRate` | 由驱动决定实际上限 |
+
+驱动拒绝的速率会显示为"不支持"，扫描继续。
+
+### 已知限制
+
+- **只测 8N1**。不探测校验位、停止位、数据位组合；校验位错误的设备通常表现为低分或读不到有效数据。
+- **要求设备主动输出**。工具不发送任何字节，只回应命令的设备收不到样本。
+- **加密 / 压缩 / 高效随机化**的输出没有可利用的统计特征，无法判断。
+- **极低占空比**的一次性开机消息可能被采样窗口错过；请增大采样时长后重扫。
+- **一档速率可能同时"读起来像文本"**：例如真实 9600 的数据在 19200 下常常也是可读字符（只是乱码）。此时看分差与原始样本，不要只看排名。
+
+## 常见问题
+
+**为什么打开串口后设备重启了？**
+
+串口打开时驱动通常拉高 DTR，很多开发板（Arduino、ESP32、STM32 最小系统板）把它接到复位。BaudScan 只在开始扫描时打开一次串口，因此最多复位一次，而不是每档一次。
+
+**为什么某些高速率显示"不支持"？**
+
+驱动拒绝设置该速率。换用支持高速率的 USB 转串口芯片（FTDI FT232H、CP2102N、CH343 等）通常可以解决。
+
+**为什么全是"无数据"？**
+
+设备没有主动输出、TX/RX 接反、地线未接、或采样太短。先确认用其它工具在已知波特率下能看到数据，再回来扫描。
+
+**为什么最佳结果不是 100 分？**
+
+评分是相对指标：文本越规整、行结构越完整、重复结构越明显，分数越高。短样本、单行输出、纯二进制帧都会压低分数，但不代表结果错误。
+
+**可以扫描非标准波特率吗？**
+
+当前覆盖 37 档标准速率。如需 31250（MIDI）、10400（部分电表）等，可修改 `internal/baud/scan.go` 中的 `Standard` 列表后重新构建。
+
+**会修改设备吗？**
+
+不会。工具只调用 `read` 和速率设置，不调用 `write`；代码中不存在写路径。
 
 ## 开发
 
-要求 Go 1.27.3 或更新（`go.mod` 会通过 `GOTOOLCHAIN=auto` 自动下载所需版本）。原生 UI 不需要 Bun。
+### 环境要求
+
+- Go **1.27.3+**（`go.mod` 会通过 `GOTOOLCHAIN=auto` 自动下载）
+- 原生 UI 不需要 Bun、Node 或任何前端工具链
+- 打包 macOS DMG 需要 macOS（`hdiutil`）；Windows 安装器需要 NSIS（可选）
+
+### 常用命令
 
 ```sh
-# 开发模式（生成并启动开发版 app，修改 .go 后自动重启）
-go tool mygo dev
+go tool mygo dev # 开发模式：构建开发版 App，改 .go 后自动重启
+go test ./... # 单元测试与模拟串口集成测试
+go vet ./... # 静态检查
+go test -race ./... # 竞态检测
 
-# 测试
-go test ./...
-go vet ./...
-
-# 打包当前平台（macOS 生成 .app + .dmg）
-go tool mygo build
-
-# macOS 启动打包后的应用（Apple Silicon 把 amd64 换成 arm64）
+go tool mygo build # 打包当前平台（macOS 生成 .app + .dmg）
 open build/darwin-amd64/BaudScan.app
 ```
 
-macOS 上请通过 mygo 生成的 `.app` 运行：直接 `go run .` 或裸二进制不会创建原生窗口。Windows / Linux 运行 `build/<os>-<arch>/` 下的可执行文件。
-
-mygo 构建产物在 `build/`。
+> macOS 上请通过 mygo 生成的 `.app` 运行：直接 `go run .` 或裸二进制不会创建原生窗口。
 
 ### 一键构建 x64 发布包
-
-在 macOS 上执行：
 
 ```sh
 ./build.sh
 ```
 
-脚本会构建全部三个 x64 目标，并把最终文件放进 `dist/`：
+脚本执行一次 `go tool mygo build -platform darwin/amd64,windows/amd64,linux/amd64`，然后校验并归一化产物：
 
-| 文件 | 平台 | 说明 |
-|---|---|---|
-| `BaudScan-<version>-macos-x64.dmg` | macOS Intel | 已校验的磁盘镜像 |
-| `BaudScan-<version>-windows-x64.exe` | Windows x64 | GUI 子系统 PE，无控制台窗口 |
-| `BaudScan-<version>-linux-x64` | Linux x64 | 可执行 ELF 二进制 |
-| `SHA256SUMS` | — | 三个产物的 SHA-256 |
+| 产物 | 内容 |
+| --- | --- |
+| `dist/BaudScan-<version>-macos-x64.dmg` | 经 `hdiutil verify`校验的磁盘镜像 |
+| `dist/BaudScan-<version>-windows-x64.exe` | 校验为 `PE32+ executable (GUI) x86-64` |
+| `dist/BaudScan-<version>-linux-x64` | 校验为 `ELF64-bit LSB executable, x86-64`，已加执行位 |
+| `dist/SHA256SUMS` | 三个产物的 SHA-256 |
 
-DMG 依赖 macOS 的 `hdiutil`，因此这个脚本需在 macOS 上运行。Windows 安装器需要 NSIS，脚本不生成安装器，只生成可直接运行的 exe。中间构建目录为 `build/release/`，最终产物目录 `dist/` 已加入 `.gitignore`。
+中间产物（含 Linux `.deb`、`.tar.gz`、`install.sh`、`.app`）保留在 `build/release/`。任一产物缺失或类型不符时脚本立即失败。
 
-### 交叉编译
+### 手动交叉编译
 
-如果只需要可执行文件，项目不依赖 cgo，可手动交叉编译：
+项目不依赖 cgo，任何平台都能构建三个平台的可执行文件：
 
 ```sh
-CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build -o dist/baudscan-darwin-arm64 .
-CGO_ENABLED=0 GOOS=darwin  GOARCH=amd64 go build -o dist/baudscan-darwin-amd64 .
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o dist/baudscan-darwin-arm64 .
+CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o dist/baudscan-darwin-amd64 .
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui" -o dist/baudscan-windows-amd64.exe .
-CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -o dist/baudscan-linux-amd64 .
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/baudscan-linux-amd64 .
 ```
 
-运行环境：
+### 运行环境
 
 - macOS 12+（原生 UI 使用 Metal）
-- Windows 10/11 x64（原生 UI 使用 Direct3D 11）
-- Linux x64/arm64（原生 UI 需要 GTK 3；打包时用 `go tool mygo build` 生成桌面入口和 `.deb`）
+- Windows 10/11（原生 UI 使用 Direct3D11）
+- Linux x64 / arm64（原生 UI 需要 GTK3）
 
-### 目录结构
+## 项目结构
 
 ```
-main.go                 窗口入口
-build.sh                一键构建 x64 发布包
-app.go                  状态、扫描编排、端口刷新
-view.go                 mygo 原生 UI
-internal/baud/          采样、评分、报告格式化
-internal/ports/         纯 Go 串口枚举（darwin/linux/windows）
-docs/screenshot.png    界面截图
-mygo.json               应用名称、标识、版本
-design/icon.svg图标源文件（改动后重新导出 icon.png）
-resources/icon.png1024×1024图标，mygo据此生成 .icns/.ico
+.
+├── main.go窗口入口与生命周期
+├── app.go界面状态、扫描编排、端口刷新、结果选择
+├── view.go mygo原生 UI（布局、表格、详情面板）
+├── app_test.go状态机测试
+├── view_test.go视图测试（含截图导出）
+├── internal/baud/
+│ ├── scan.go串口采样：打开一次、逐档切换、提前结束
+│ ├── analyze.go统计量与评分（文本 /二进制 /噪声 /恒定）
+│ ├── format.go预览、十六进制转储、单位格式化
+│ ├── scan_test.go模拟串口集成测试
+│ ├── analyze_test.go评分单元测试
+│ ├── pty_live_test.go真实 serial.Open路径测试（socat PTY，可选）
+│ └── unsupported_test.go驱动拒绝速率的判定
+├── internal/ports/纯 Go串口枚举
+│ ├── ports.go排序与自然序比较
+│ ├── ports_darwin.go /dev/cu.*
+│ ├── ports_linux.go ttyUSB / ttyACM / ttyS / rfcomm等
+│ ├── ports_windows.go注册表 SERIALCOMM
+│ └── ports_test.go
+├── design/icon.svg图标源文件
+├── resources/icon.png1024×1024图标，mygo据此生成 .icns / .ico
+├── docs/截图
+├── build.sh x64一键发布脚本
+├── mygo.json应用名、标识、版本、发布者
+├── go.mod / go.sum依赖与工具版本锁定
+└── LICENSE MIT
 ```
 
-### 图标
+### 依赖
 
-`design/icon.svg`是图标源文件。画布1024×1024透明，圆角主体824×824居中，四周各留100px空白，约占画布20%。这是 macOS自家图标的网格比例：内容占79.2%，`Mail`、`Notes`实测同为79.2%，所以 Dock、Finder和“关于”窗口里 BaudScan不会显得比别人大。波形笔画48px粗，缩到48×48仍能辨认。
+| 模块 | 作用 |
+| --- | --- |
+| [`github.com/egoist/mygo`](https://github.com/egoist/mygo) | 原生 UI 与打包工具链（`go tool mygo`） |
+| [`go.bug.st/serial`](https://github.com/bugst/go-serial) | 跨平台串口读写与速率设置 |
+
+`internal/ports` 不依赖 `go.bug.st/serial/enumerator`，因为它使用 cgo；这里是纯 Go 实现，保证可从任意平台交叉编译。
+
+## 图标
+
+`design/icon.svg` 是图标源文件。画布 1024×1024 透明，圆角主体 824×824 居中，四周各留 100 px，内容占画布约 79.2% ——与 macOS 自带图标的网格比例一致（`Mail`、`Notes` 实测同为 79.2%），因此 Dock、Finder 与"关于"窗口里的视觉尺寸和其他应用相同。波形笔画 48 px，缩到 48×48 仍可辨认。
 
 修改后重新导出：
 
@@ -159,23 +314,38 @@ rsvg-convert -w1024 -h1024 design/icon.svg -o resources/icon.png
 go tool mygo build
 ```
 
-`mygo build`会从 `resources/icon.png`生成 macOS的 `.icns`（32/64/128/256/512/1024各档）和 Windows的 `.ico`（16/24/32/48/64/128/256）。
+`mygo build` 会从 `resources/icon.png` 生成 macOS 的 `.icns`（32/64/128/256/512/1024）和 Windows 的 `.ico`（16/24/32/48/64/128/256）。
 
 ## 测试
 
-- 评分单元测试：文本、UTF-8、噪声、恒定电平、二进制周期帧。
-- 扫描集成测试：用按波特率提供不同数据的模拟串口，验证能从噪声中选出 9600。
-- 覆盖取消、无数据、SetMode 失败、端口刷新、结果选择、深色模式与最小窗口布局。
-- `go test -race ./...`。
+```sh
+go test ./... # 33 项，覆盖 3 个包
+go test -race ./...
+go vet ./...
+```
 
-可选的真实串口 I/O 测试（macOS/Linux，需要 `socat`）：
+覆盖范围：
+
+- **评分**：标准文本、UTF-8 中文、随机噪声、恒定电平、定长二进制帧；预览与十六进制转储格式。
+- **排序**：同分时常用速率优先、未测档位排末尾。
+- **扫描**：用模拟串口为每档提供不同数据，验证能从噪声中选出 9600；覆盖取消、无数据、`SetMode` 失败继续、采样提前结束。
+- **驱动拒绝**：`EINVAL` 判定为"不支持"而非错误。
+- **界面状态**：端口刷新 /保留 /消失、结果填充、最佳行跟随与手动锁定、无数据、深色主题、最小窗口尺寸。
+- **真实 I/O 路径**（可选，需 `socat`）：验证真实的 `serial.Open`、`SetMode`、清缓冲与读取。
 
 ```sh
 socat pty,raw,echo=0,link=/tmp/baudscan-pty-a pty,raw,echo=0,link=/tmp/baudscan-pty-b
+
 BAUDSCAN_PTY=/tmp/baudscan-pty-a BAUDSCAN_PTY_PEER=/tmp/baudscan-pty-b \
-  go test ./internal/baud -run TestLivePTY
+ go test ./internal/baud -run TestLivePTY
 ```
 
-它验证真实的 `serial.Open`、`SetMode`、清缓冲和读取路径；PTY 会原样传递字节，所以不能验证波特率判别本身。
+PTY 会原样传递字节，因此这项测试只验证驱动层调用路径，不验证波特率判别本身。
 
-> 自动识别是启发式判断，不保证 100% 正确。最终结果请结合原始字节和设备协议确认。
+## 免责声明
+
+波特率识别基于统计启发式判断，**不保证正确**。请结合原始字节、设备手册与协议文档确认后再用于生产环境。串口打开可能触发设备复位，请在允许重启设备的场合使用。
+
+## 许可证
+
+[MIT](LICENSE) ©2026 j4ckzh0u

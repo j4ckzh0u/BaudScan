@@ -1,4 +1,4 @@
-module baudscan
+module github.com/j4ckzh0u/BaudScan
 
 go 1.27.3
 

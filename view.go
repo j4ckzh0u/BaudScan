@@ -6,7 +6,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"baudscan/internal/baud"
+	"github.com/j4ckzh0u/BaudScan/internal/baud"
 )
 
 func (a *app) view(c *ui.Context) {
