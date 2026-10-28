@@ -144,7 +144,22 @@ internal/baud/          采样、评分、报告格式化
 internal/ports/         纯 Go 串口枚举（darwin/linux/windows）
 docs/screenshot.png    界面截图
 mygo.json               应用名称、标识、版本
+design/icon.svg图标源文件（改动后重新导出 icon.png）
+resources/icon.png1024×1024图标，mygo据此生成 .icns/.ico
 ```
+
+### 图标
+
+`design/icon.svg`是图标源文件。画布1024×1024透明，圆角主体824×824居中，四周各留100px空白，约占画布20%。这是 macOS自家图标的网格比例：内容占79.2%，`Mail`、`Notes`实测同为79.2%，所以 Dock、Finder和“关于”窗口里 BaudScan不会显得比别人大。波形笔画48px粗，缩到48×48仍能辨认。
+
+修改后重新导出：
+
+```sh
+rsvg-convert -w1024 -h1024 design/icon.svg -o resources/icon.png
+go tool mygo build
+```
+
+`mygo build`会从 `resources/icon.png`生成 macOS的 `.icns`（32/64/128/256/512/1024各档）和 Windows的 `.ico`（16/24/32/48/64/128/256）。
 
 ## 测试
 
