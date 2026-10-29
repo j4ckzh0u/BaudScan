@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -32,6 +33,18 @@ type app struct {
 	port  string
 
 	duration string
+
+	// plan is the order the next scan tries: the common rates, the rates
+	// typed by hand, then every other standard rate. customRates holds
+	// that text and customErr explains why it cannot be used, if so.
+	plan        []int
+	customRates string
+	customErr   string
+
+	// frame holds the framing controls as the interface labels them.
+	dataBits string
+	parity   string
+	stopBits string
 
 	scanning    bool
 	cancel      context.CancelFunc
@@ -64,7 +77,11 @@ func newApp() *app {
 		scanner:   baud.NewScanner(),
 		listPorts: ports.List,
 		duration:  durationOptions[2].Label,
+		dataBits:  defaultLabels[0],
+		parity:    defaultLabels[1],
+		stopBits:  defaultLabels[2],
 	}
+	a.refreshPlan()
 	a.resetResults()
 	a.refreshPorts(false)
 	return a
@@ -73,8 +90,8 @@ func newApp() *app {
 // resetResults lists every rate before a scan starts, so the table shows the
 // whole set that will be tested. Store fills the rows in place.
 func (a *app) resetResults() {
-	a.results = make([]baud.Result, len(baud.All))
-	for i, rate := range baud.All {
+	a.results = make([]baud.Result, len(a.plan))
+	for i, rate := range a.plan {
 		a.results[i] = baud.Result{Baud: rate, Pending: true}
 	}
 	a.selected = -1
@@ -119,14 +136,65 @@ func (a *app) refreshPorts(announce bool) {
 		a.status = "未发现串口 ·接入设备后点击刷新"
 		a.statusLevel = statusWarn
 	case announce:
-		a.status = fmt.Sprintf("已刷新 · %d个串口 ·当前 %s（%s）·将测试全部 %d档",
-			len(list), a.port, label, len(baud.All))
+		a.status = fmt.Sprintf("已刷新 · %d个串口 ·当前 %s（%s）·将测试 %d档 %s",
+			len(list), a.port, label, len(a.plan), a.frame().Label())
 		a.statusLevel = statusNormal
 	case a.status == "":
-		a.status = fmt.Sprintf("就绪 · %d个串口 ·当前 %s（%s）·将测试全部 %d档",
-			len(list), a.port, label, len(baud.All))
+		a.status = fmt.Sprintf("就绪 · %d个串口 ·当前 %s（%s）·将测试 %d档 %s",
+			len(list), a.port, label, len(a.plan), a.frame().Label())
 		a.statusLevel = statusNormal
 	}
+}
+
+// defaultLabels are the framing the interface starts with, as its selectors
+// label them.
+var defaultLabels = func() [3]string {
+	dataBits, parity, stopBits := baud.DefaultFrame.Labels()
+	return [3]string{dataBits, parity, stopBits}
+}()
+
+// frame is the framing the next scan uses.
+func (a *app) frame() baud.Frame {
+	return baud.FrameFrom(a.dataBits, a.parity, a.stopBits)
+}
+
+// refreshPlan re-reads the rates typed by hand and rebuilds the scan order.
+// It reports whether the order changed, which makes earlier results stale.
+func (a *app) refreshPlan() bool {
+	custom, err := baud.ParseRates(a.customRates)
+	if err != nil {
+		a.customErr = err.Error()
+		return false
+	}
+	a.customErr = ""
+	plan := baud.Plan(custom)
+	changed := !slices.Equal(plan, a.plan)
+	a.plan = plan
+	return changed
+}
+
+// frameChanged applies the framing the next scan uses. The samples already
+// taken were read under the old framing, so they no longer apply.
+func (a *app) frameChanged() {
+	a.resetResults()
+	a.status = fmt.Sprintf("帧格式 %s ·将测试 %d档 ·重新扫描后才有结果", a.frame().Label(), len(a.plan))
+	a.statusLevel = statusNormal
+}
+
+// customRatesChanged re-reads the rates typed by hand and resizes the table
+// to the new plan. Text that cannot be read leaves the table as it was and
+// disables the scan until it is fixed.
+func (a *app) customRatesChanged() {
+	if a.refreshPlan() {
+		a.resetResults()
+	}
+	if a.customErr != "" {
+		a.status = "自定义波特率无效：" + a.customErr
+		a.statusLevel = statusBad
+		return
+	}
+	a.status = fmt.Sprintf("将测试 %d档 %s ·其中自定义 %d档", len(a.plan), a.frame().Label(), len(baud.CustomRates(a.plan)))
+	a.statusLevel = statusNormal
 }
 
 func (a *app) sampleDuration() time.Duration {
@@ -140,7 +208,7 @@ func (a *app) sampleDuration() time.Duration {
 
 // estimate is how long a full scan takes with the current sample length.
 func (a *app) estimate() time.Duration {
-	n := time.Duration(len(baud.All))
+	n := time.Duration(len(a.plan))
 	return n*(a.sampleDuration()+baud.DefaultSettle) + baud.OpenDelay
 }
 
@@ -154,13 +222,14 @@ func (a *app) startScan() {
 	a.scanStarted = time.Now()
 	a.progress = 0
 	a.resetResults()
-	a.status = fmt.Sprintf("正在打开串口 ·将测试全部 %d档", len(baud.All))
+	a.status = fmt.Sprintf("正在打开串口 ·将测试 %d档 %s", len(a.plan), a.frame().Label())
 	a.statusLevel = statusNormal
 
 	win := a.win
 	opts := baud.ScanOptions{
 		Port:   a.port,
-		Rates:  baud.All,
+		Rates:  a.plan,
+		Frame:  a.frame(),
 		Sample: a.sampleDuration(),
 		OnEvent: func(ev baud.Event) {
 			// The callback runs on the scanning goroutine. Window.Update
@@ -208,7 +277,7 @@ func (a *app) store(res baud.Result) {
 			break
 		}
 	}
-	baud.Rank(a.results)
+	baud.Rank(a.results, a.plan)
 }
 
 // selectBest follows the best result that has data, so the detail panel
@@ -238,7 +307,7 @@ func (a *app) stopScan() {
 func (a *app) finishScan(err error, elapsed time.Duration) {
 	switch {
 	case errors.Is(err, context.Canceled):
-		a.status = fmt.Sprintf("已停止 ·已完成 %d/%d档", a.doneCount(), len(baud.All))
+		a.status = fmt.Sprintf("已停止 ·已完成 %d/%d档", a.doneCount(), len(a.plan))
 		a.statusLevel = statusNormal
 		return
 	case err != nil:
@@ -260,8 +329,8 @@ func (a *app) finishScan(err error, elapsed time.Duration) {
 	best := a.results[0]
 	switch {
 	case best.Analysis.Score >= 60:
-		a.status = fmt.Sprintf("完成 ·最可能 %d baud（%d分）·测试了全部 %d档 ·用时 %s",
-			best.Baud, best.Analysis.Score, len(baud.All), shortDuration(elapsed))
+		a.status = fmt.Sprintf("完成 ·最可能 %d baud（%d分）·测试了 %d档 %s ·用时 %s",
+			best.Baud, best.Analysis.Score, len(a.plan), a.frame().Label(), shortDuration(elapsed))
 		a.statusLevel = statusGood
 	default:
 		a.status = fmt.Sprintf("完成 ·未找到可信波特率（最佳 %d分）·请查看候选样本",

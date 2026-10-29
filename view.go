@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -36,38 +37,54 @@ func (a *app) header(c *ui.Context) {
 func (a *app) controls(c *ui.Context) {
 	t := c.Theme()
 	ui.Column(c).FillWidth().Padding(14).Gap(10).Background(t.Surface).Border(1, t.Border).Radius(12).Children(func() {
-		ui.Column(c).FillWidth().Gap(5).Children(func() {
-			fieldLabel(c, "串口设备")
-			ui.Row(c).FillWidth().Gap(6).Children(func() {
-				if len(a.ports) == 0 {
-					ui.Row(c).Height(30).Grow(1).Shrink(1).Padding(4, 10).Border(1, t.Border).Radius(6).
-						Background(t.Background).AlignItems(ui.Center).Children(func() {
-						ui.Text(c, "未发现串口设备").FontSize(12).TextColor(t.TextMuted).SingleLine()
+		ui.Row(c).FillWidth().AlignItems(ui.End).Gap(10).Children(func() {
+			ui.Column(c).Grow(1).Shrink(1).Gap(5).Children(func() {
+				fieldLabel(c, "串口设备")
+				ui.Row(c).FillWidth().Gap(6).Children(func() {
+					if len(a.ports) == 0 {
+						ui.Row(c).Height(32).Grow(1).Shrink(1).Padding(4, 10).Border(1, t.Border).Radius(6).
+							Background(t.Background).AlignItems(ui.Center).Children(func() {
+							ui.Text(c, "未发现串口设备").FontSize(12).TextColor(t.TextMuted).SingleLine()
+						})
+					} else {
+						options := make([]string, len(a.ports))
+						for i, p := range a.ports {
+							options[i] = p.Name
+						}
+						if ui.Select(c, &a.port, options).Label("串口设备").Disabled(a.scanning).Changed() {
+							a.resetResults()
+							a.status = fmt.Sprintf("已选择 %s（%s）·将测试 %d档 %s", a.port, a.portLabel(a.port), len(a.plan), a.frame().Label())
+							a.statusLevel = statusNormal
+						}
+					}
+					ui.Button(c, "刷新").Width(58).Shrink(0).Disabled(a.scanning).OnClick(func() {
+						a.refreshPorts(true)
 					})
-				} else {
-					options := make([]string, len(a.ports))
-					for i, p := range a.ports {
-						options[i] = p.Name
-					}
-					if ui.Select(c, &a.port, options).Label("串口设备").Disabled(a.scanning).Changed() {
-						a.resetResults()
-						a.status = fmt.Sprintf("已选择 %s（%s）·将测试全部 %d档", a.port, a.portLabel(a.port), len(baud.All))
-						a.statusLevel = statusNormal
-					}
-				}
-				ui.Button(c, "刷新").Width(58).Shrink(0).Disabled(a.scanning).OnClick(func() {
-					a.refreshPorts(true)
 				})
+			})
+
+			a.frameField(c, "数据位", &a.dataBits, baud.DataBitLabels)
+			a.frameField(c, "校验位", &a.parity, baud.ParityLabels)
+			a.frameField(c, "停止位", &a.stopBits, baud.StopBitLabels)
+
+			ui.Column(c).Width(frameFieldWidth + 38).Shrink(0).Gap(5).Children(func() {
+				fieldLabel(c, "自定义波特率")
+				if ui.TextInput(c, &a.customRates).Label("自定义波特率").
+					Placeholder("如31250,10400").Disabled(a.scanning).Changed() {
+					a.customRatesChanged()
+				}
 			})
 		})
 
 		ui.Row(c).FillWidth().AlignItems(ui.End).Gap(8).Children(func() {
 			ui.Column(c).Grow(1).Gap(3).Children(func() {
-				ui.Text(c, a.coverageLine()).FontSize(11).TextColor(t.TextMuted).SingleLine()
+				hint, hintColor := a.frameHint(t)
+				ui.Text(c, hint).FontSize(11).TextColor(hintColor).SingleLine()
 				ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
 					ui.Box(c).Width(7).Height(7).Radius(4).Background(a.statusColor(t))
 					ui.Text(c, a.status).FontSize(12).TextColor(a.statusColor(t)).SingleLine()
 				})
+				ui.Text(c, a.coverageLine()).FontSize(11).TextColor(t.TextMuted).SingleLine()
 			})
 
 			ui.Column(c).Width(150).Shrink(0).Gap(5).Children(func() {
@@ -79,7 +96,7 @@ func (a *app) controls(c *ui.Context) {
 				ui.Select(c, &a.duration, labels).Label("每档采样时长").Disabled(a.scanning).Width(150)
 			})
 
-			ui.PrimaryButton(c, "开始扫描").Width(112).Shrink(0).Disabled(a.scanning || a.port == "").OnClick(a.startScan)
+			ui.PrimaryButton(c, "开始扫描").Width(112).Shrink(0).Disabled(a.scanning || a.port == "" || a.customErr != "").OnClick(a.startScan)
 			ui.Button(c, "停止").Width(70).Shrink(0).Disabled(!a.scanning).OnClick(a.stopScan)
 		})
 
@@ -89,14 +106,47 @@ func (a *app) controls(c *ui.Context) {
 	})
 }
 
+// frameFieldWidth is the room one framing selector needs. Select's trigger
+// is at least Theme.Space(35) wide, 140 by default, and a narrower Width is
+// ignored, which used to let the selector spill over the next column.
+const frameFieldWidth = 140
+
+// frameField lays out one framing selector under its label, so the three sit
+// on the same row as the port at every window width.
+func (a *app) frameField(c *ui.Context, label string, value *string, options []string) {
+	ui.Column(c).Width(frameFieldWidth).Shrink(0).Gap(5).Children(func() {
+		fieldLabel(c, label)
+		if ui.Select(c, value, options).Label(label).Disabled(a.scanning).Width(frameFieldWidth).Changed() {
+			a.frameChanged()
+		}
+	})
+}
+
 // coverageLine states how many rates the next scan covers and how long it
 // takes, so the cost of a full sweep is visible before it starts.
 func (a *app) coverageLine() string {
 	tested := a.doneCount()
-	if tested == 0 || tested == len(a.results) {
-		return fmt.Sprintf("全部 %d档 ·预计 %s", len(baud.All), shortDuration(a.estimate()))
+	if tested == 0 || tested == len(a.plan) {
+		return fmt.Sprintf("共 %d档 ·预计 %s", len(a.plan), shortDuration(a.estimate()))
 	}
-	return fmt.Sprintf("%d/%d档已测 ·全部 %d档需 %s", tested, len(baud.All), len(baud.All), shortDuration(a.estimate()))
+	return fmt.Sprintf("%d/%d档已测 ·全部 %d档需 %s", tested, len(a.plan), len(a.plan), shortDuration(a.estimate()))
+}
+
+// frameHint states the framing in use and the rates typed by hand, or why
+// they cannot be used.
+func (a *app) frameHint(t *ui.Theme) (string, ui.Color) {
+	if a.customErr != "" {
+		return "自定义波特率无效：" + a.customErr, t.Danger
+	}
+	if custom := baud.CustomRates(a.plan); len(custom) > 0 {
+		labels := make([]string, len(custom))
+		for i, rate := range custom {
+			labels[i] = baud.BaudLabel(rate)
+		}
+		return fmt.Sprintf("帧格式 %s ·自定义 %d档（%s）·共 %d档",
+			a.frame().Label(), len(custom), strings.Join(labels, ", "), len(a.plan)), t.TextMuted
+	}
+	return fmt.Sprintf("帧格式 %s ·可补充标准列表之外的速率，用逗号分隔", a.frame().Label()), t.TextMuted
 }
 
 func (a *app) resultsCard(c *ui.Context) {
@@ -257,7 +307,8 @@ func (a *app) detailCard(c *ui.Context) {
 			pill(c, confidenceLabel(a, a.selected), confidenceColor(a, a.selected, t))
 		})
 		ui.Text(c, a.scoreLine()).FontSize(11).TextColor(t.TextMuted)
-		ui.Text(c, fmt.Sprintf("%s · %s · %d行", baud.KindLabel(r.Analysis.Kind), baud.FormatBytes(r.Bytes), r.Analysis.Lines)).
+		ui.Text(c, fmt.Sprintf("%s · %s · %d行 · %s", baud.KindLabel(r.Analysis.Kind), baud.FormatBytes(r.Bytes),
+			r.Analysis.Lines, a.frame().Label())).
 			FontSize(11).TextColor(t.TextMuted)
 
 		ui.Row(c).FillWidth().Gap(8).Children(func() {
@@ -330,8 +381,8 @@ func (a *app) emptyDetail(c *ui.Context) {
 
 func (a *app) footer(c *ui.Context) {
 	t := c.Theme()
-	ui.Text(c, fmt.Sprintf("只读扫描，不会向设备发送任何字节 ·逐档测试 %d个标准波特率（8N1）·单次全扫约 %s",
-		len(baud.All), shortDuration(a.estimate()))).
+	ui.Text(c, fmt.Sprintf("只读扫描，不会向设备发送任何字节 ·逐档测试 %d个波特率（%s）·单次全扫约 %s",
+		len(a.plan), a.frame().Label(), shortDuration(a.estimate()))).
 		FontSize(11).TextColor(t.TextMuted)
 }
 

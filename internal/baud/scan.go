@@ -63,11 +63,13 @@ type Result struct {
 }
 
 // Rank sorts results from most to least likely, breaking ties by how early a
-// rate is scanned. Rates the scan has not reached go last.
-func Rank(results []Result) {
-	order := make(map[int]int, len(All))
-	for i, rate := range All {
-		order[rate] = i
+// rate is scanned. order is the scan's rate sequence, which is All unless
+// the scan was given rates of its own. Rates the scan has not reached go
+// last.
+func Rank(results []Result, order []int) {
+	place := make(map[int]int, len(order))
+	for i, rate := range order {
+		place[rate] = i
 	}
 	sort.SliceStable(results, func(i, j int) bool {
 		a, b := &results[i], &results[j]
@@ -77,8 +79,8 @@ func Rank(results []Result) {
 		if a.Analysis.Score != b.Analysis.Score {
 			return a.Analysis.Score > b.Analysis.Score
 		}
-		oi, iok := order[a.Baud]
-		oj, jok := order[b.Baud]
+		oi, iok := place[a.Baud]
+		oj, jok := place[b.Baud]
 		switch {
 		case iok && jok:
 			return oi < oj
@@ -104,6 +106,10 @@ type Event struct {
 type ScanOptions struct {
 	Port  string
 	Rates []int
+
+	// Frame is the data bits, parity and stop bits every rate is tried
+	// under. A zero Frame means DefaultFrame.
+	Frame Frame
 
 	// Sample is the longest time spent on one baud rate. IdleAfter ends a
 	// sample early once data has arrived and then stopped for that long,
@@ -162,8 +168,7 @@ func (s *Scanner) Scan(ctx context.Context, opts ScanOptions) ([]Result, error) 
 		open = serial.Open
 	}
 
-	mode := &serial.Mode{BaudRate: rates[0], DataBits: 8, Parity: serial.NoParity, StopBits: serial.OneStopBit}
-	port, err := open(opts.Port, mode)
+	port, err := open(opts.Port, opts.Frame.Mode(rates[0]))
 	if err != nil {
 		return nil, fmt.Errorf("打开串口失败: %w", err)
 	}
@@ -184,7 +189,7 @@ func (s *Scanner) Scan(ctx context.Context, opts ScanOptions) ([]Result, error) 
 			return results, err
 		}
 		if i > 0 {
-			if err := port.SetMode(&serial.Mode{BaudRate: rate, DataBits: 8, Parity: serial.NoParity, StopBits: serial.OneStopBit}); err != nil {
+			if err := port.SetMode(opts.Frame.Mode(rate)); err != nil {
 				res := Result{Baud: rate, Err: FriendlyError(err), Unsupported: Unsupported(err)}
 				results = append(results, res)
 				emit(opts, Event{Index: i, Total: len(rates), Baud: rate, Result: &results[len(results)-1]})
@@ -219,6 +224,9 @@ func (s *Scanner) Scan(ctx context.Context, opts ScanOptions) ([]Result, error) 
 }
 
 func withDefaults(opts ScanOptions) ScanOptions {
+	if opts.Frame.DataBits == 0 {
+		opts.Frame = DefaultFrame
+	}
 	if opts.Sample <= 0 {
 		opts.Sample = DefaultSample
 	}
@@ -312,16 +320,19 @@ func emit(opts ScanOptions, event Event) {
 	}
 }
 
-// FriendlyError turns the serial package's errors into Chinese advice.
-// Unsupported reports whether the port refused the rate itself, as macOS
-// does for rates its driver cannot program.
+// Unsupported reports whether the port refused the rate or the framing
+// itself, as macOS does for rates its driver cannot program and Linux for
+// 1.5 stop bits.
 func Unsupported(err error) bool {
 	if errors.Is(err, syscall.EINVAL) {
 		return true
 	}
 	var pe serial.PortError
 	if errors.As(err, &pe) {
-		return pe.Code() == serial.InvalidSpeed
+		switch pe.Code() {
+		case serial.InvalidSpeed, serial.InvalidDataBits, serial.InvalidParity, serial.InvalidStopBits:
+			return true
+		}
 	}
 	return false
 }
@@ -341,6 +352,12 @@ func FriendlyError(err error) string {
 			return "没有访问权限（Linux请把用户加入 dialout组）"
 		case serial.InvalidSpeed:
 			return "此设备不支持该波特率"
+		case serial.InvalidDataBits:
+			return "此设备不支持该数据位"
+		case serial.InvalidParity:
+			return "此设备不支持该校验位"
+		case serial.InvalidStopBits:
+			return "此设备不支持该停止位"
 		case serial.PortClosed:
 			return "串口已断开"
 		}

@@ -121,7 +121,7 @@ func TestScanFindsTextRate(t *testing.T) {
 	if len(results) != len(All) {
 		t.Fatalf("got %d results, want %d", len(results), len(All))
 	}
-	Rank(results)
+	Rank(results, All)
 	best := results[0]
 	if best.Baud != 9600 {
 		t.Fatalf("best = %d (score %d), want 9600: %+v", best.Baud, best.Analysis.Score, results)

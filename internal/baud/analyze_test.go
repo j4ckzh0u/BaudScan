@@ -117,7 +117,7 @@ func TestRank(t *testing.T) {
 		{Baud: 115200, Analysis: Analysis{Score: 80}},
 		{Baud: 57600, Analysis: Analysis{Score: 80}},
 	}
-	Rank(results)
+	Rank(results, All)
 	if results[0].Baud != 115200 || results[1].Baud != 57600 || results[2].Baud != 9600 {
 		t.Errorf("rank order = %v", []int{results[0].Baud, results[1].Baud, results[2].Baud})
 	}

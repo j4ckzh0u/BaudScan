@@ -63,7 +63,7 @@ func TestLivePTY(t *testing.T) {
 			t.Errorf("%d: no bytes read over the PTY", r.Baud)
 		}
 	}
-	Rank(results)
+	Rank(results, All)
 	if results[0].Analysis.Score < 80 {
 		t.Fatalf("best score = %d, want text-like: %+v", results[0].Analysis.Score, results[0].Analysis)
 	}
